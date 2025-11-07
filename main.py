@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.data_loader import VWSDDataLoader
 from src.inference import QwenVLInference, InferenceResult
-from models.model_loader import load_model
+from src.sense_enrichment import generate_or_load_definitions
+from models.vlm_model_loader import load_model
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,26 +65,47 @@ def save_detailed_predictions(results: list, output_file: str):
 def run_inference(args):
     """Run inference on VWSD test set."""
 
-    # Load model
-    logger.info("Loading model...")
-
-    model, processor = load_model(
-        model_name=args.model,
-        quantization=None,
-        device="cuda",
-        dtype="bfloat16"
-    )
-
-    # Initialize inference engine
-    inference_engine = QwenVLInference(model, processor, device="cuda")
-
-    # Load data
+    # Load data first (needed for both definition generation and inference)
     logger.info("Loading test data...")
 
     data_loader = VWSDDataLoader(data_dir=args.data_dir)
     instances = data_loader.load_test_data(language=args.language)
 
     logger.info(f"Loaded {len(instances)} test instances")
+
+    # Stage 1: Definition Generation (if enabled)
+    definitions = None
+    if args.use_definitions:
+        logger.info(f"Stage 1: Generating sense definitions with {args.definition_model}...")
+
+        definitions = generate_or_load_definitions(
+            test_instances=instances,
+            language=args.language,
+            model_name=args.definition_model,
+            quantization=args.definition_quantization,
+            cache_dir=args.definition_cache_dir,
+            force_regenerate=args.regenerate_definitions,
+            batch_size=args.definition_batch_size
+        )
+
+        logger.info(f"✓ Loaded/generated {len(definitions)} sense definitions")
+
+    # Stage 2: Visual WSD with Qwen3-VL
+    logger.info(f"Stage 2: Loading Qwen3-VL model for visual inference...")
+
+    model, processor = load_model(
+        model_name=args.vlm_model,
+        quantization=None,
+        device="cuda"
+    )
+
+    # Initialize inference engine with definitions
+    inference_engine = QwenVLInference(
+        model,
+        processor,
+        device="cuda",
+        definitions=definitions
+    )
 
     # Run inference
     logger.info(f"Running inference with method: {args.method}, batch size: {args.batch_size}")
@@ -169,7 +191,17 @@ def run_inference(args):
 
     # Create output directory
     inference_mode = f"single_img_batch{args.batch_size}"
-    output_dir = os.path.join(args.output_dir, f"{args.model}_{args.method}_{inference_mode}")
+    # Include definition model in output path if used
+    if args.use_definitions:
+        output_dir = os.path.join(
+            args.output_dir,
+            f"{args.model}_{args.method}_enriched_{args.definition_model}_{inference_mode}"
+        )
+    else:
+        output_dir = os.path.join(
+            args.output_dir,
+            f"{args.model}_{args.method}_{inference_mode}"
+        )
     os.makedirs(output_dir, exist_ok=True)
 
     # Save prediction file
@@ -227,11 +259,11 @@ def main():
 
     # Model arguments
     parser.add_argument(
-        "--model",
+        "--vlm-model",
         type=str,
         default="qwen3-vl-8b",
         choices=["qwen3-vl-2b", "qwen3-vl-4b", "qwen3-vl-8b", "qwen3-vl-32b"],
-        help="Qwen3-VL model to use for inference"
+        help="Qwen3-VL model to use for visual inference"
     )
 
     # Inference arguments
@@ -273,21 +305,70 @@ def main():
         help="Directory to save predictions"
     )
 
+    # Definition enrichment arguments
+    parser.add_argument(
+        "--use-definitions",
+        action="store_true",
+        help="Enable sense definition enrichment using Qwen3 text models"
+    )
+
+    parser.add_argument(
+        "--definition-model",
+        type=str,
+        default="qwen3-14b",
+        choices=["qwen3-4b", "qwen3-8b", "qwen3-14b"],
+        help="Qwen3 text model to use for generating sense definitions (default: qwen3-14b for best quality)"
+    )
+
+    parser.add_argument(
+        "--definition-quantization",
+        type=str,
+        default="bf16",
+        choices=["4bit", "bf16"],
+        help="Quantization for definition model: 4bit (VRAM-efficient) or bf16 (BFloat16, default, higher quality)"
+    )
+
+    parser.add_argument(
+        "--definition-cache-dir",
+        type=str,
+        default="results/sense_definitions",
+        help="Directory to cache generated definitions (default: results/sense_definitions)"
+    )
+
+    parser.add_argument(
+        "--regenerate-definitions",
+        action="store_true",
+        help="Force regenerate definitions (ignore cache)"
+    )
+
+    parser.add_argument(
+        "--definition-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for definition generation (default: 32)"
+    )
+
     args = parser.parse_args()
 
+    # Convert vlm_model to model for backward compatibility
+    args.model = args.vlm_model
+
     # Print configuration
-    logger.info("="*60)
-    logger.info(f"Model: {args.model} | Method: {args.method} | Language: {args.language} | Batch size: {args.batch_size}")
-    logger.info("="*60)
+    config_parts = [
+        f"VLM: {args.model}",
+        f"Method: {args.method}",
+        f"Language: {args.language}",
+        f"Batch: {args.batch_size}"
+    ]
+    if args.use_definitions:
+        config_parts.append(f"Definitions: {args.definition_model} ({args.definition_quantization})")
+    logger.info(" | ".join(config_parts))
 
     # Run inference
     prediction_dir = run_inference(args)
 
     # Run evaluation
     run_evaluation(prediction_dir, args)
-
-    logger.info("All done!")
-    logger.info("="*60)
 
 
 if __name__ == "__main__":

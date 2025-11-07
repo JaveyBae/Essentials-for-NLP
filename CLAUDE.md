@@ -13,18 +13,19 @@ This is a **Visual Word Sense Disambiguation (VWSD)** system using Qwen3-VL mult
 ### Component Flow
 
 1. **Data Loading** (`src/data_loader.py`): Loads test instances (word + context + 10 candidate images) with parallel image loading optimization
-2. **Model Loading** (`models/model_loader.py`): Loads Qwen3-VL models with caching, quantization support, and automatic Flash Attention 2
-3. **Inference Engine** (`src/inference.py`): Core ranking logic using two methods:
+2. **VLM Model Loading** (`models/vlm_model_loader.py`): Loads Qwen3-VL vision-language models with caching, bfloat16/AWQ-INT4 support, and automatic Flash Attention 2
+3. **Definition Generation** (`models/definition_generator.py`): Generates contextual sense definitions using Qwen3 text models (separate from VLM pipeline)
+4. **Inference Engine** (`src/inference.py`): Core ranking logic using two methods:
    - `matching`: Prompt VLM to rate each image 0-10 for relevance
    - `description`: Generate image description, compute semantic similarity with context using model's text encoder
-4. **Evaluation** (`eval/vwsd_ranking_metric.py`): Computes MRR and Hit@1 metrics
-5. **Main Orchestration** (`main.py`): Coordinates the pipeline
+5. **Evaluation** (`eval/vwsd_ranking_metric.py`): Computes MRR and Hit@1 metrics
+6. **Main Orchestration** (`main.py`): Coordinates the pipeline
 
 ### Key Design Patterns
 
 **Batching Strategy**: The `--batch-size` parameter controls how many **test instances** are processed in parallel, NOT how many images within an instance. Within each instance, all ~10 candidate images are processed together in a single forward pass (see `src/inference.py:190-265`).
 
-**Model Caching**: Models are cached globally in `models/model_loader.py:22` to avoid reloading across runs. Use `Qwen3VLModelLoader.clear_all_cache()` to clear.
+**Model Caching**: VLM models are cached globally in `models/vlm_model_loader.py:22` to avoid reloading across runs. Use `Qwen3VLModelLoader.clear_all_cache()` to clear.
 
 **Image Loading**: Uses `ThreadPoolExecutor` for parallel loading (`src/data_loader.py:210-231`) with LRU cache for frequently accessed images.
 
@@ -38,8 +39,8 @@ This is a **Visual Word Sense Disambiguation (VWSD)** system using Qwen3-VL mult
 # Basic run with default 8B model
 python main.py --language en
 
-# Use smaller model with quantization (for limited VRAM)
-python main.py --model qwen3-vl-4b --quantization 8bit --language en
+# Use smaller model (for limited VRAM)
+python main.py --vlm-model qwen3-vl-4b --language en
 
 # Increase batch size for faster processing (more test instances in parallel)
 python main.py --batch-size 5 --language en
@@ -68,8 +69,11 @@ python eval/vwsd_ranking_metric.py \
 ### Testing Components
 
 ```bash
-# Test model loader
-python models/model_loader.py
+# Test VLM model loader
+python models/vlm_model_loader.py
+
+# Test definition generator
+python models/definition_generator.py
 
 # Test data loader
 python src/data_loader.py
@@ -128,20 +132,20 @@ Detailed predictions include target word and context:
 target_word[TAB]full_phrase[TAB]top1_image.jpg
 ```
 
-### Model Loading Parameters
+### VLM Model Loading Parameters
 
 - `model_name`: One of `qwen3-vl-2b`, `qwen3-vl-4b`, `qwen3-vl-8b`, `qwen3-vl-32b`
-- `quantization`: `None`, `4bit`, or `8bit`
-- `dtype`: `bfloat16` (default), `float16`, or `auto`
+- `quantization`: `None` (bfloat16 full precision) or `4bit` (AWQ-INT4 quantization)
 - `device`: `cuda` or `cpu`
 
-The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL batch processing (`models/model_loader.py:155`).
+The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL batch processing (`models/vlm_model_loader.py:155`).
 
 ### Memory Management
 
-- GPU memory stats printed after model loading (`models/model_loader.py:162-165`)
+- GPU memory stats printed after VLM model loading (`models/vlm_model_loader.py:162-165`)
+- Definition generator automatically cleaned up via context manager to free GPU before VLM loading
 - Explicit cache clearing after processing each instance batch (`src/inference.py:263-265`)
-- Context manager support for automatic cleanup (`models/model_loader.py:209-217`)
+- Context manager support for automatic VLM cleanup (`models/vlm_model_loader.py:209-217`)
 
 ### Inference Method Comparison
 
@@ -172,7 +176,7 @@ The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL ba
 
 ## Troubleshooting
 
-**CUDA OOM**: Use smaller model (`--model qwen3-vl-4b`) or quantization (`--quantization 8bit`). Note that `batch-size` affects instance-level parallelism, not per-instance image batching.
+**CUDA OOM**: Use smaller model (`--vlm-model qwen3-vl-4b`) or 4-bit quantization (`--quantization 4bit`). Note that `batch-size` affects instance-level parallelism, not per-instance image batching.
 
 **Model download issues**: Models auto-download from HuggingFace (2-32GB). Set cache with `export HF_HOME=/path/to/cache`.
 

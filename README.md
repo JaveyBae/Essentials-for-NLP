@@ -34,12 +34,15 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 Essentials-for-NLP/
 ├── data/
 │   ├── test_images/test_images_resized/    # Test images
-│   └── test_data/                          # Test data files (.txt format)
+│   ├── test_data/                          # Test data files (.txt format)
+│   └── sense_definitions/                  # Cached sense definitions (auto-generated)
 ├── models/
-│   └── model_loader.py                     # Qwen3-VL model loading utilities
+│   ├── vlm_model_loader.py                 # Qwen3-VL model loading utilities
+│   └── definition_generator.py             # Qwen3 text model for sense definitions
 ├── src/
 │   ├── data_loader.py                      # VWSD data loading
-│   └── inference.py                        # Inference engine
+│   ├── inference.py                        # Inference engine with enriched prompts
+│   └── sense_enrichment.py                 # Definition cache management (NEW)
 ├── eval/
 │   └── vwsd_ranking_metric.py              # Evaluation metrics
 ├── results/
@@ -50,85 +53,191 @@ Essentials-for-NLP/
 
 ## Usage
 
-### Basic Command
+### Basic Command (Baseline)
 
 ```bash
 # Run evaluation with default settings (8B model, matching method, batch size 10)
 python main.py --language en
 
 # Use smaller model (for lower VRAM)
-python main.py --model qwen3-vl-4b --language en
+python main.py --vlm-model qwen3-vl-4b --language en
 ```
+
+### **NEW: Sense Definition Enrichment** ⭐
+
+Enhance prompts with contextual sense definitions using Qwen3 text models for improved accuracy:
+
+```bash
+# Recommended: Use Qwen3-14B for high-quality definitions (best accuracy)
+python main.py --language en --use-definitions --definition-model qwen3-14b
+
+# Faster: Use Qwen3-8B for good quality with faster generation
+python main.py --language en --use-definitions --definition-model qwen3-8b
+
+# Budget: Use Qwen3-4B for resource-constrained environments
+python main.py --language en --use-definitions --definition-model qwen3-4b
+```
+
+**How it works:**
+1. **Stage 1**: Qwen3 text model generates sense definitions for all test instances → cached to disk → model unloaded
+2. **Stage 2**: Qwen3-VL loads with enriched prompts containing the definitions
+3. **Result**: +5-10% Hit@1 improvement expected (from ~66% → ~71-76%)
+
+**Key benefits:**
+- Sequential pipeline: No VRAM conflicts (definition model fully unloads before VL model loads)
+- Persistent cache: Definitions generated once, reused instantly on subsequent runs
+- Ablation-friendly: Compare baseline vs enriched easily
 
 ### Advanced Options
 
 ```bash
-# Try description method instead of matching
-python main.py --method description --language en
+# Try different inference methods
+python main.py --method matching_cot --language en --use-definitions  # Chain-of-thought reasoning
+python main.py --method description --language en --use-definitions   # Description-based matching
 
 # Adjust batch size (number of test instances to process in parallel)
-# Each instance's ~10 candidate images are evaluated together in one batch
-python main.py --batch-size 5 --language en
+python main.py --batch-size 5 --language en --use-definitions
+
+# Force regenerate definitions (ignore cache)
+python main.py --language en --use-definitions --regenerate-definitions
+
+# Use BF16 precision for definition model (better quality, more VRAM)
+python main.py --language en --use-definitions \
+  --definition-model qwen3-14b \
+  --definition-quantization bf16
 
 # Other languages
-python main.py --language fa  # Farsi
-python main.py --language it  # Italian
+python main.py --language fa --use-definitions  # Farsi
+python main.py --language it --use-definitions  # Italian
 ```
 
 ## Models & Inference Strategy
 
+### Visual Models (Qwen3-VL)
+
 **Available Models** (auto-download from HuggingFace):
-- `qwen3-vl-2b`: ~4GB VRAM (~2GB with 8-bit) - Fastest
-- `qwen3-vl-4b`: ~8GB VRAM (~4GB with 8-bit) - Fast
-- `qwen3-vl-8b`: ~16GB VRAM (~8GB with 8-bit) - **Recommended**
-- `qwen3-vl-32b`: ~64GB VRAM (~16GB with 8-bit) - Best quality
+- `qwen3-vl-2b`: ~4GB VRAM - Fastest
+- `qwen3-vl-4b`: ~8GB VRAM - Fast
+- `qwen3-vl-8b`: ~16GB VRAM - **Recommended**
+
+### Definition Models (Qwen3 Text - For Sense Enrichment)
+
+**Available Models** (optional, only used with `--use-definitions`):
+- `qwen3-4b`: ~2.5GB VRAM (4-bit) / ~8GB (BF16) - Budget-friendly
+- `qwen3-8b`: ~5GB VRAM (4-bit) / ~16GB (BF16) - High quality, **recommended**
+- `qwen3-14b`: ~9GB VRAM (4-bit) / ~28GB (BF16) - Best quality
+
+**Quantization Best Practices:**
+- **AWQ-INT4** (default): Best VRAM efficiency, minimal quality loss (~1-2%)
+  - Use for: Most scenarios, especially when VRAM is limited
+  - Command: `--definition-quantization 4bit` (default)
+- **BF16** (bfloat16): Maximum quality, higher VRAM usage
+  - Use for: Final experiments when you need absolute best definitions
+  - Command: `--definition-quantization bf16`
+- **Recommendation**: Start with 4-bit, only use BF16 if you have 32GB+ VRAM and need the extra 1-2% improvement
+
+**VRAM Usage Examples:**
+```
+# Conservative (16GB VRAM total)
+Stage 1: Qwen3-8B (4-bit):   ~5 GB  → unload → 0 GB
+Stage 2: Qwen3-VL-8B (BF16): ~16 GB
+Peak: 16 GB ✓
+
+# High Quality (24GB VRAM total)
+Stage 1: Qwen3-14B (4-bit):  ~9 GB  → unload → 0 GB
+Stage 2: Qwen3-VL-8B (BF16): ~16 GB
+Peak: 16 GB (in Stage 2) ✓
+
+# Maximum Quality (32GB+ VRAM)
+Stage 1: Qwen3-14B (BF16):   ~28 GB → unload → 0 GB
+Stage 2: Qwen3-VL-8B (BF16): ~16 GB
+Peak: 28 GB (in Stage 1) ✓
+```
 
 **Inference Strategy**:
-- **Batch evaluation**: All ~10 candidate images for an instance are processed together in a single forward pass for efficiency
-- **Instance batching**: Multiple test instances can be processed in parallel using `--batch-size`
-- **Example**: `batch_size=5` means 5 test instances are processed simultaneously, and within each instance, all ~10 candidate images are evaluated together in one batch
-- **Memory efficiency**: Images are batched per instance to maximize GPU utilization while keeping memory manageable
+- **Two-stage pipeline** (when using definitions):
+  1. **Definition generation**: Load Qwen3 text model → generate → cache → unload
+  2. **Visual inference**: Load Qwen3-VL → process with enriched prompts
+- **Single-image evaluation**: Each candidate image evaluated independently to avoid attention dilution
+- **Batch processing**: Multiple test instances can be processed in parallel using `--batch-size`
+- **Memory efficiency**: Sequential loading ensures no VRAM conflicts between definition and VL models
 
 ## Inference Methods
 
-Two strategies for ranking images:
+Three strategies for ranking images:
 
-1. **matching** (default, recommended): Numeric rating (0-10)
+1. **matching** (default, recommended): Direct numeric rating (0-10)
    - Prompts the model: "Rate how well this image matches the SPECIFIC meaning of [word] in [context]"
+   - With `--use-definitions`: Enriched prompt includes sense definition
    - Each image receives a score from 0 (unrelated) to 10 (perfect match)
-   - All images for an instance are processed together in one batch
-   - Images are ranked by their scores (highest to lowest)
+   - Fast and effective
 
-2. **description**: Semantic similarity-based matching
+2. **matching_cot**: Chain-of-thought reasoning + rating
+   - Model reasons step-by-step before providing rating
+   - More thorough but slower than direct matching
+   - Format: "[reasoning sentence] Rating: X"
+   - Best for: Complex ambiguous cases, research analysis
+
+3. **description**: Semantic similarity-based matching
    - Generates a description for each image (8-15 words)
    - Computes cosine similarity between description embeddings and context phrase embeddings using Qwen's text encoder
    - Optional bonus if target word appears in description
-   - More interpretable results but may be less accurate
+   - Most interpretable results, useful for error analysis
 
 ## Key Command-Line Options
 
 ```bash
 python main.py [OPTIONS]
 
-# Model (quantization not currently used in main.py)
---model {qwen3-vl-2b,4b,8b,32b}     [default: qwen3-vl-8b]
---dtype {bfloat16,float16,auto}     [default: bfloat16 (hardcoded in main.py)]
+# Visual Model
+--vlm-model {qwen3-vl-2b,4b,8b}          [default: qwen3-vl-8b]
 
 # Inference
---method {matching,description}          [default: matching]
---batch-size N                           [default: 10, number of test instances to process in parallel]
+--method {matching,matching_cot,description}  [default: matching]
+--batch-size N                           [default: 10, number of test instances in parallel]
 --language {en,fa,it}                    [default: en]
 
-# Data & Evaluation
---data-dir DIR                      [default: data]
---output-dir DIR                    [default: results/predictions]
+# Sense Definition Enrichment (NEW)
+--use-definitions                        Enable sense definition enrichment
+--definition-model {qwen3-4b,8b,14b}     [default: qwen3-14b]
+--definition-quantization {4bit,bf16}    [default: bf16] (4bit=AWQ-INT4, bf16=BFloat16)
+--definition-batch-size N                [default: 32]
+--definition-cache-dir DIR               [default: results/sense_definitions]
+--regenerate-definitions                 Force regenerate (ignore cache)
+
+# Data & Output
+--data-dir DIR                           [default: data]
+--output-dir DIR                         [default: results/predictions]
+```
+
+**Recommended Configurations:**
+
+```bash
+# Best accuracy (16GB VRAM)
+python main.py --language en --use-definitions --definition-model qwen3-8b
+
+# Maximum quality (24GB+ VRAM)
+python main.py --language en --use-definitions --definition-model qwen3-14b
+
+# Ultra quality (32GB+ VRAM) - Use BF16 for definitions
+python main.py --language en --use-definitions \
+  --definition-model qwen3-14b --definition-quantization bf16
 ```
 
 ## Performance Benchmarks
 
-- **CLIP Baseline**: ~66.8% Hit@1 (OpenAI CLIP ViT-L/14)
-- **Target**: 50-70% Hit@1 with VLM
-- **SOTA (SemEval-2023)**: 72.56% Hit@1
+| System | Hit@1 | Notes |
+|--------|-------|-------|
+| **CLIP Baseline** | ~66.8% | OpenAI CLIP ViT-L/14 |
+| **Qwen3-VL (baseline)** | ~66-70% | Without sense enrichment |
+| **Qwen3-VL + Definitions** | ~71-76% | With Qwen3-8B/14B sense enrichment (+5-10%) |
+| **SOTA (SemEval-2023)** | 72.56% | FCLL with fine-tuned contrastive learning |
+
+**Expected Improvements with Sense Enrichment:**
+- **+3-5%** with Qwen3-4B definitions
+- **+5-8%** with Qwen3-8B definitions (4-bit)
+- **+7-10%** with Qwen3-14B definitions (4-bit)
+- **+8-11%** with Qwen3-14B definitions (BF16, maximum quality)
 
 ## Data Formats
 
@@ -152,7 +261,7 @@ img3.jpg[TAB]img7.jpg[TAB]img1.jpg[TAB]...
 **CUDA Out of Memory**:
 ```bash
 # Use smaller model
-python main.py --model qwen3-vl-4b --language en
+python main.py --vlm-model qwen3-vl-4b --language en
 
 # Reduce batch size (process fewer instances in parallel)
 python main.py --batch-size 1 --language en

@@ -66,10 +66,63 @@ Describe the main subject or concept shown in this image (8-15 words).
 Focus on elements that could relate to different meanings of "{target_word}".'''
 }
 
+# ========== Enriched Prompt Templates (with sense definitions) ==========
+# These templates incorporate contextual sense definitions from Qwen3 to improve disambiguation
+
+ENRICHED_PROMPT_TEMPLATES = {
+    "matching_enriched": '''Task: Rate how well this image matches the intended meaning of a word.
+
+Target word: "{target_word}"
+Context: "{full_phrase}"
+Intended meaning: {sense_definition}
+
+The word "{target_word}" has multiple senses. In this context, it means: {sense_definition}
+Rate how well this image matches THIS specific meaning.
+
+Rating scale:
+0 = completely unrelated or shows a different meaning
+5 = somewhat related
+10 = perfect match for the intended meaning
+
+Provide only a single number (0-10) as your rating.''',
+
+    "matching_cot_enriched": '''Task: Rate how well this image matches the word sense in context.
+
+Target word: "{target_word}"
+Context: "{full_phrase}"
+Intended meaning: {sense_definition}
+
+Think step-by-step:
+1. What does the image show?
+2. Does it match the intended meaning ({sense_definition})?
+3. How well does it fit the context?
+
+Rating scale:
+0-3 = Wrong meaning or unrelated
+4-6 = Partially related
+7-10 = Clear match to the intended meaning
+
+Format:
+[1-2 sentence reasoning]
+Rating: X''',
+
+    "description_enriched": '''Task: Describe this image objectively, focusing on the word "{target_word}".
+
+Target word: "{target_word}"
+Context: "{full_phrase}"
+Intended meaning: {sense_definition}
+
+Describe what you see (8-15 words). Focus on elements that relate to "{target_word}", especially the intended meaning: {sense_definition}'''
+}
+
 MAX_TOKENS = {
     "matching": 50,          # Only need one number
     "matching_cot": 300,     # Reasoning + final rating (increased to prevent truncation)
-    "description": 100       # Short description
+    "description": 100,      # Short description
+    # Enriched versions use same token limits
+    "matching_enriched": 50,
+    "matching_cot_enriched": 300,
+    "description_enriched": 100
 }
 
 
@@ -87,7 +140,7 @@ class InferenceResult:
 class QwenVLInference:
     """VWSD inference using Qwen-VL models."""
 
-    def __init__(self, model, processor, device="cuda"):
+    def __init__(self, model, processor, device="cuda", definitions=None):
         """
         Initialize inference engine.
 
@@ -95,10 +148,12 @@ class QwenVLInference:
             model: Loaded Qwen-VL model
             processor: Loaded Qwen-VL processor
             device: Device to run inference on
+            definitions: Optional dict mapping (target_word, context) -> definition
         """
         self.model = model
         self.processor = processor
         self.device = device
+        self.definitions = definitions or {}
 
     def encode_text(self, text: str) -> torch.Tensor:
         """
@@ -200,11 +255,34 @@ class QwenVLInference:
 
                 logger.debug(f"Instance {global_idx+1}/{num_instances}: Evaluating {num_images} images")
 
-                # Format prompt (same for all images in this instance)
-                prompt = PROMPT_TEMPLATES[method].format(
-                    target_word=target_word,
-                    full_phrase=full_phrase
-                )
+                # Check if we have a definition for this instance
+                definition_key = (target_word, full_phrase)
+                has_definition = definition_key in self.definitions
+
+                # Select appropriate prompt template and format
+                if has_definition:
+                    # Use enriched template with definition
+                    enriched_method = f"{method}_enriched"
+                    if enriched_method in ENRICHED_PROMPT_TEMPLATES:
+                        prompt = ENRICHED_PROMPT_TEMPLATES[enriched_method].format(
+                            target_word=target_word,
+                            full_phrase=full_phrase,
+                            sense_definition=self.definitions[definition_key]
+                        )
+                        logger.debug(f"Using enriched prompt with definition: '{self.definitions[definition_key][:50]}...'")
+                    else:
+                        # Fallback to regular template if enriched version doesn't exist
+                        prompt = PROMPT_TEMPLATES[method].format(
+                            target_word=target_word,
+                            full_phrase=full_phrase
+                        )
+                        logger.warning(f"No enriched template for method '{method}', using regular template")
+                else:
+                    # Use regular template without definition
+                    prompt = PROMPT_TEMPLATES[method].format(
+                        target_word=target_word,
+                        full_phrase=full_phrase
+                    )
 
                 # Cache phrase embedding for description method
                 if method == "description" and full_phrase not in phrase_embedding_cache:
@@ -237,15 +315,16 @@ class QwenVLInference:
                     padding=True
                 ).to(self.device)
 
+                # Determine effective method for MAX_TOKENS lookup
+                effective_method = f"{method}_enriched" if has_definition and f"{method}_enriched" in ENRICHED_PROMPT_TEMPLATES else method
+                max_tokens = MAX_TOKENS.get(effective_method, MAX_TOKENS[method])
+
                 # Generate scores for all candidate images at once
                 with torch.inference_mode():
                     generated_ids = self.model.generate(
                         **inputs,
-                        max_new_tokens=MAX_TOKENS[method],
+                        max_new_tokens=max_tokens,
                         do_sample=False,
-                        temperature=1.0,
-                        top_p=None,
-                        top_k=None,
                     )
 
                 # Decode responses
