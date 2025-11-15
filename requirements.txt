@@ -5,13 +5,13 @@ numpy>=1.24.0
 # PyTorch 2.9+ - Install separately for CUDA 12.8 support
 # Run: pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 
-# Transformers and VLM dependencies
-transformers>=4.57.0
-accelerate>=0.33.0
-bitsandbytes>=0.44.0
-qwen-vl-utils==0.0.14
-sentencepiece>=0.1.99
-protobuf>=3.20.0
+# Transformers - Required for both SigLIP2 and Qwen3-VL
+transformers>=4.57.0      # SigLIP2 + Qwen3-VL models
+accelerate>=0.33.0        # Model loading and device management
+bitsandbytes>=0.44.0      # 4-bit/8-bit quantization support
+qwen-vl-utils==0.0.14     # Qwen3-VL specific utilities
+sentencepiece>=0.1.99     # Qwen3 tokenizer
+protobuf>=3.20.0          # Tokenizer dependencies
 
 # Flash Attention 2 - Required for Qwen3-VL performance optimization
 # Note: Install with --no-build-isolation flag
@@ -20,9 +20,6 @@ protobuf>=3.20.0
 ninja>=1.11.0
 packaging>=23.0
 wheel>=0.40.0
-
-# vLLM for efficient inference (optional but recommended)
-vllm>=0.11.0
 
 # Evaluation metrics
 ranx>=0.3.16

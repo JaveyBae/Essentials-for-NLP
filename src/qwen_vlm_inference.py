@@ -15,8 +15,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ========== Single-image Prompt Templates ==========
-# Process one image at a time to avoid attention dilution
+# ========== Prompt Templates ==========
+# Four distinct methods for Visual WSD:
+# 1. matching: Pure baseline (target_word + context only, no definitions)
+# 2. matching_cot: Pure baseline + CoT (target_word + context + reasoning, no definitions)
+# 3. description: Definition-based matching (uses sense definition + rating)
+# 4. embedding: Direct cosine similarity (no prompts, no definitions)
 
 PROMPT_TEMPLATES = {
     "matching": '''Task: Given a word and textual context, rate how well this image matches the intended meaning.
@@ -57,27 +61,14 @@ Example:
 The phrase means "financial institution." The image shows a riverbank. Different meanings.
 Rating: 0''',
 
-    "description": '''Task: Describe what you see in this image, focusing on aspects relevant to the word "{target_word}".
-
-Target word: "{target_word}"
-Full phrase: "{full_phrase}"
-
-Describe the main subject or concept shown in this image (8-15 words).
-Focus on elements that could relate to different meanings of "{target_word}".'''
-}
-
-# ========== Enriched Prompt Templates (with sense definitions) ==========
-# These templates incorporate contextual sense definitions from Qwen3 to improve disambiguation
-
-ENRICHED_PROMPT_TEMPLATES = {
-    "matching_enriched": '''Task: Rate how well this image matches the intended meaning of a word.
+    "description": '''Task: Rate how well this image matches the intended meaning of a word, using the provided visual clue.
 
 Target word: "{target_word}"
 Context: "{full_phrase}"
-Intended meaning: {sense_definition}
+Visual clue: {sense_definition}
 
-The word "{target_word}" has multiple senses. In this context, it means: {sense_definition}
-Rate how well this image matches THIS specific meaning.
+Rate how well this image matches the meaning of "{target_word}" in "{full_phrase}".
+Use the visual clue as a reference for what to look for.
 
 Rating scale:
 0 = completely unrelated or shows a different meaning
@@ -86,43 +77,14 @@ Rating scale:
 
 Provide only a single number (0-10) as your rating.''',
 
-    "matching_cot_enriched": '''Task: Rate how well this image matches the word sense in context.
-
-Target word: "{target_word}"
-Context: "{full_phrase}"
-Intended meaning: {sense_definition}
-
-Think step-by-step:
-1. What does the image show?
-2. Does it match the intended meaning ({sense_definition})?
-3. How well does it fit the context?
-
-Rating scale:
-0-3 = Wrong meaning or unrelated
-4-6 = Partially related
-7-10 = Clear match to the intended meaning
-
-Format:
-[1-2 sentence reasoning]
-Rating: X''',
-
-    "description_enriched": '''Task: Describe this image objectively, focusing on the word "{target_word}".
-
-Target word: "{target_word}"
-Context: "{full_phrase}"
-Intended meaning: {sense_definition}
-
-Describe what you see (8-15 words). Focus on elements that relate to "{target_word}", especially the intended meaning: {sense_definition}'''
+    "embedding": None  # Embedding method doesn't use prompts
 }
 
 MAX_TOKENS = {
     "matching": 50,          # Only need one number
-    "matching_cot": 300,     # Reasoning + final rating (increased to prevent truncation)
-    "description": 100,      # Short description
-    # Enriched versions use same token limits
-    "matching_enriched": 50,
-    "matching_cot_enriched": 300,
-    "description_enriched": 100
+    "matching_cot": 300,     # Reasoning + final rating
+    "description": 50,       # Only need one number (definition-based matching)
+    "embedding": None        # No generation
 }
 
 
@@ -204,6 +166,62 @@ class QwenVLInference:
 
         return pooled.squeeze(0)  # Shape: (hidden_size,)
 
+    def encode_image(self, image: Image.Image) -> torch.Tensor:
+        """
+        Encode image into embedding using Qwen3-VL's full model forward pass.
+
+        Args:
+            image: PIL Image object
+
+        Returns:
+            Mean-pooled image embedding vector of shape (hidden_size,)
+        """
+        # Create a simple text prompt for the image
+        # Using a neutral prompt that works for any image
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": "Describe this image."}
+                ]
+            }
+        ]
+
+        # Apply chat template
+        text_prompt = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # Process inputs
+        inputs = self.processor(
+            text=[text_prompt],
+            images=[image],
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
+
+        with torch.inference_mode():
+            # Forward pass with output_hidden_states to get intermediate features
+            outputs = self.model(
+                **inputs,
+                output_hidden_states=True,
+                return_dict=True
+            )
+
+            # Get the last hidden state from the final layer
+            # outputs.hidden_states is a tuple of hidden states from each layer
+            # We want the last layer: shape (batch_size, sequence_length, hidden_size)
+            last_hidden_state = outputs.hidden_states[-1]
+
+            # Mean pool over the sequence dimension to get a single embedding
+            # This pools all visual and text tokens together
+            image_embedding = last_hidden_state.mean(dim=1)  # (batch_size, hidden_size)
+
+        return image_embedding.squeeze(0)  # Shape: (hidden_size,)
+
     def rank_images(self,
                     instances_data: List[Dict],
                     method: str = "matching",
@@ -235,7 +253,7 @@ class QwenVLInference:
 
         results = []
 
-        # Cache for phrase embeddings when using description method
+        # Cache for phrase embeddings when using embedding method
         phrase_embedding_cache = {}
 
         # Process instances in batches
@@ -255,104 +273,130 @@ class QwenVLInference:
 
                 logger.debug(f"Instance {global_idx+1}/{num_instances}: Evaluating {num_images} images")
 
-                # Check if we have a definition for this instance
-                definition_key = (target_word, full_phrase)
-                has_definition = definition_key in self.definitions
+                # ============ EMBEDDING METHOD: Direct cosine similarity ============
+                if method == "embedding":
+                    # Format text query same as SigLIP2 for consistency
+                    text_query = f"this is a photo of a {target_word}. {full_phrase}".lower()
 
-                # Select appropriate prompt template and format
-                if has_definition:
-                    # Use enriched template with definition
-                    enriched_method = f"{method}_enriched"
-                    if enriched_method in ENRICHED_PROMPT_TEMPLATES:
-                        prompt = ENRICHED_PROMPT_TEMPLATES[enriched_method].format(
+                    # Encode text query once (cache by query to avoid recomputation)
+                    cache_key = (target_word, full_phrase)
+                    if cache_key not in phrase_embedding_cache:
+                        with torch.inference_mode():
+                            phrase_embedding_cache[cache_key] = self.encode_text(text_query)
+
+                    text_embedding = phrase_embedding_cache[cache_key]
+                    scores = []
+
+                    # Encode each image and compute cosine similarity
+                    for img_idx, img in enumerate(images):
+                        image_embedding = self.encode_image(img)
+
+                        # Compute cosine similarity (same as SigLIP2 approach)
+                        similarity = F.cosine_similarity(
+                            text_embedding.unsqueeze(0),
+                            image_embedding.unsqueeze(0)
+                        ).item()
+
+                        scores.append(similarity)
+                        logger.debug(f"  Image {img_idx+1}/{num_images}: similarity={similarity:.4f}")
+
+                # ============ GENERATIVE METHODS: Prompting + parsing ============
+                else:
+                    # Route to appropriate prompt based on method
+                    definition_key = (target_word, full_phrase)
+                    has_definition = definition_key in self.definitions
+
+                    if method == "description":
+                        # Description method REQUIRES definitions
+                        if not has_definition:
+                            raise ValueError(
+                                f"Description method requires definitions, but no definition found for "
+                                f"instance {global_idx+1} (target_word='{target_word}', context='{full_phrase}'). "
+                                f"Please run definition generation first or use a different method."
+                            )
+                        # Format with definition
+                        prompt = PROMPT_TEMPLATES[method].format(
                             target_word=target_word,
                             full_phrase=full_phrase,
                             sense_definition=self.definitions[definition_key]
                         )
-                        logger.debug(f"Using enriched prompt with definition: '{self.definitions[definition_key][:50]}...'")
-                    else:
-                        # Fallback to regular template if enriched version doesn't exist
+                        if global_idx == 0:
+                            logger.info(f"Using definition-based prompts (example: '{self.definitions[definition_key][:60]}...')")
+
+                    elif method in ["matching", "matching_cot"]:
+                        # Matching methods do NOT use definitions (pure baseline)
                         prompt = PROMPT_TEMPLATES[method].format(
                             target_word=target_word,
                             full_phrase=full_phrase
                         )
-                        logger.warning(f"No enriched template for method '{method}', using regular template")
-                else:
-                    # Use regular template without definition
-                    prompt = PROMPT_TEMPLATES[method].format(
-                        target_word=target_word,
-                        full_phrase=full_phrase
-                    )
+                        if global_idx == 0:
+                            logger.info(f"Using pure baseline prompts (no definitions)")
 
-                # Cache phrase embedding for description method
-                if method == "description" and full_phrase not in phrase_embedding_cache:
+                    else:
+                        raise ValueError(f"Unknown generative method: {method}")
+
+                    # Stream processing: build texts and process images in batches
+                    scores = []
+
+                    # Process all images for this instance in one batch
+                    texts = []
+                    for img in images:
+                        content = [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": prompt}
+                        ]
+                        messages = [{"role": "user", "content": content}]
+                        text = self.processor.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                        texts.append(text)
+
+                    # Prepare batch inputs
+                    inputs = self.processor(
+                        text=texts,
+                        images=[[img] for img in images],
+                        return_tensors="pt",
+                        padding=True
+                    ).to(self.device)
+
+                    # Get max tokens for this method
+                    max_tokens = MAX_TOKENS[method]
+
+                    # Generate scores for all candidate images at once
                     with torch.inference_mode():
-                        phrase_embedding_cache[full_phrase] = self.encode_text(full_phrase)
-
-                # Stream processing: build texts and process images in batches
-                scores = []
-
-                # Process all images for this instance in one batch
-                texts = []
-                for img in images:
-                    content = [
-                        {"type": "image", "image": img},
-                        {"type": "text", "text": prompt}
-                    ]
-                    messages = [{"role": "user", "content": content}]
-                    text = self.processor.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True
-                    )
-                    texts.append(text)
-
-                # Prepare batch inputs
-                inputs = self.processor(
-                    text=texts,
-                    images=[[img] for img in images],
-                    return_tensors="pt",
-                    padding=True
-                ).to(self.device)
-
-                # Determine effective method for MAX_TOKENS lookup
-                effective_method = f"{method}_enriched" if has_definition and f"{method}_enriched" in ENRICHED_PROMPT_TEMPLATES else method
-                max_tokens = MAX_TOKENS.get(effective_method, MAX_TOKENS[method])
-
-                # Generate scores for all candidate images at once
-                with torch.inference_mode():
-                    generated_ids = self.model.generate(
-                        **inputs,
-                        max_new_tokens=max_tokens,
-                        do_sample=False,
-                    )
-
-                # Decode responses
-                generated_ids_trimmed = [
-                    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                ]
-                output_texts = self.processor.batch_decode(
-                    generated_ids_trimmed,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False
-                )
-
-                # Parse each response to get score
-                for img_idx, output_text in enumerate(output_texts):
-                    output_text = output_text.strip()
-
-                    if method in ["matching", "matching_cot"]:
-                        score = self._parse_single_image_score(output_text)
-                    elif method == "description":
-                        score = self._score_description(
-                            output_text,
-                            full_phrase,
-                            target_word,
-                            phrase_embedding_cache.get(full_phrase)
+                        generated_ids = self.model.generate(
+                            **inputs,
+                            max_new_tokens=max_tokens,
+                            do_sample=False,
                         )
 
-                    scores.append(score)
+                    # Decode responses
+                    generated_ids_trimmed = [
+                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                    ]
+                    output_texts = self.processor.batch_decode(
+                        generated_ids_trimmed,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False
+                    )
+
+                    # Parse each response to get score
+                    for img_idx, output_text in enumerate(output_texts):
+                        output_text = output_text.strip()
+
+                        # All generative methods now use VLM rating (0-10)
+                        if method in ["matching", "matching_cot", "description"]:
+                            score = self._parse_single_image_score(output_text)
+
+                        scores.append(score)
                     logger.debug(f"  Image {img_idx+1}/{num_images}: score={score:.2f}, response='{output_text[:50]}...')")
+
+                    # Explicit memory cleanup for generative methods
+                    del inputs, generated_ids, generated_ids_trimmed, output_texts, texts
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 # Rank by scores (highest first)
                 ranked_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)
@@ -361,11 +405,6 @@ class QwenVLInference:
 
                 results.append((ranked_filenames, ranked_scores))
                 logger.debug(f"Instance {global_idx+1} top-3: {ranked_filenames[:3]} with scores {ranked_scores[:3]}")
-
-                # Explicit memory cleanup
-                del inputs, generated_ids, generated_ids_trimmed, output_texts, texts, scores
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
         # Clear phrase embedding cache
         phrase_embedding_cache.clear()
@@ -419,52 +458,6 @@ class QwenVLInference:
         score = rating / 10.0
 
         return score
-
-    def _score_description(self, description: str, full_phrase: str, target_word: str,
-                          phrase_embedding: torch.Tensor = None) -> float:
-        """
-        Score an image description based on semantic similarity with context.
-
-        Uses Qwen's text encoder to compute embeddings and cosine similarity
-        between the description and the full phrase.
-
-        Args:
-            description: Model's description of the image
-            full_phrase: Full phrase containing target word
-            target_word: The ambiguous target word
-            phrase_embedding: Cached embedding for full_phrase (optional, computed if not provided)
-
-        Returns:
-            Score based on semantic similarity (0.0 to 1.0)
-        """
-        # Use cached phrase embedding if provided, otherwise compute it
-        if phrase_embedding is None:
-            with torch.inference_mode():
-                phrase_embedding = self.encode_text(full_phrase)
-
-        # Encode description
-        with torch.inference_mode():
-            desc_embedding = self.encode_text(description)
-
-        # Compute cosine similarity
-        # F.cosine_similarity expects inputs of shape (1, D) or (N, D)
-        similarity = F.cosine_similarity(
-            phrase_embedding.unsqueeze(0),
-            desc_embedding.unsqueeze(0)
-        ).item()
-
-        # Cosine similarity ranges from -1 to 1, normalize to [0, 1]
-        score = (similarity + 1.0) / 2.0
-
-        # Optional: Small bonus if target word appears in description
-        # (indicates the description is focused on the target concept)
-        target_lower = target_word.lower()
-        description_lower = description.lower()
-        if target_lower in description_lower:
-            score = min(score + 0.1, 1.0)
-
-        # Ensure score is in valid range
-        return max(0.0, min(score, 1.0))
 
 
 def main():

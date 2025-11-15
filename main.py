@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Main execution script for Visual Word Sense Disambiguation.
-Runs inference and evaluation on VWSD test set.
+Supports both SigLIP2 (embedding-based) and VLM (Qwen3-VL) approaches.
 """
 
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -15,9 +16,6 @@ import logging
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.data_loader import VWSDDataLoader
-from src.inference import QwenVLInference, InferenceResult
-from src.sense_enrichment import generate_or_load_definitions
-from models.vlm_model_loader import load_model
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,44 +60,95 @@ def save_detailed_predictions(results: list, output_file: str):
     logger.info(f"Detailed predictions saved to: {output_file}")
 
 
-def run_inference(args):
-    """Run inference on VWSD test set."""
+def run_inference_siglip2(args, data_loader, instances):
+    """Run SigLIP2 inference (embedding-based ranking)."""
+    from src.siglip2_loader import load_siglip2_model
+    from src.siglip2_inference import SigLIP2Inference, InferenceResult
 
-    # Load data first (needed for both definition generation and inference)
-    logger.info("Loading test data...")
+    logger.info(f"Loading SigLIP2 model...")
 
-    data_loader = VWSDDataLoader(data_dir=args.data_dir)
-    instances = data_loader.load_test_data(language=args.language)
+    # SigLIP2 always uses F32 or float16 (no quantization support)
+    model, processor = load_siglip2_model(
+        model_name=args.siglip2_model,
+        quantization=None,  # SigLIP2 doesn't support quantization
+        device="cuda"
+    )
 
-    logger.info(f"Loaded {len(instances)} test instances")
+    # Initialize inference engine
+    inference_engine = SigLIP2Inference(model, processor, device="cuda")
 
-    # Stage 1: Definition Generation (if enabled)
-    definitions = None
-    if args.use_definitions:
-        logger.info(f"Stage 1: Generating sense definitions with {args.definition_model}...")
+    logger.info(f"Running SigLIP2 inference...")
+
+    results = []
+
+    # Process instances one by one
+    for instance in tqdm(instances, desc="Processing instances"):
+        images = data_loader.load_instance_images(instance)
+
+        instance_data = [{
+            'images': images,
+            'image_filenames': instance.candidate_images,
+            'target_word': instance.target_word,
+            'full_phrase': instance.full_phrase
+        }]
+
+        batch_results = inference_engine.rank_images(instances_data=instance_data)
+        ranked_filenames, scores = batch_results[0]
+
+        result = InferenceResult(
+            instance_id=instance.instance_id,
+            ranked_images=ranked_filenames,
+            scores=scores,
+            target_word=instance.target_word,
+            full_phrase=instance.full_phrase,
+            gold_image=instance.gold_image
+        )
+        results.append(result)
+
+    return results
+
+
+def run_inference_vlm(args, data_loader, instances):
+    """Run Qwen3-VL inference (generative VLM with prompting)."""
+    from src.qwen3_inference import generate_or_load_definitions
+    from src.qwen_vlm_inference import InferenceResult
+
+    pipeline_start = time.time()
+
+    # Stage 1: Definition Generation (ONLY for description method)
+    definitions = {}
+    if args.method == "description":
+        logger.info(f"[Stage 1/3] Generating sense definitions with {args.definition_model}...")
+        def_start = time.time()
 
         definitions = generate_or_load_definitions(
             test_instances=instances,
             language=args.language,
             model_name=args.definition_model,
-            quantization=args.definition_quantization,
+            quantization=args.quantization,  # Use unified quantization parameter
             cache_dir=args.definition_cache_dir,
             force_regenerate=args.regenerate_definitions,
             batch_size=args.definition_batch_size
         )
 
-        logger.info(f"✓ Loaded/generated {len(definitions)} sense definitions")
+        def_time = time.time() - def_start
+        logger.info(f"Definitions ready: {len(definitions)} definitions in {def_time:.2f}s")
+    else:
+        logger.info(f"[Stage 1/3] Skipping definition generation (not needed for method '{args.method}')")
 
     # Stage 2: Visual WSD with Qwen3-VL
-    logger.info(f"Stage 2: Loading Qwen3-VL model for visual inference...")
+    logger.info(f"[Stage 2/3] Loading Qwen3-VL model...")
+
+    from src.qwen_vlm_loader import load_model
+    from src.qwen_vlm_inference import QwenVLInference
 
     model, processor = load_model(
         model_name=args.vlm_model,
-        quantization=None,
+        quantization=args.quantization,
         device="cuda"
     )
 
-    # Initialize inference engine with definitions
+    # Initialize inference engine with definitions (always enabled)
     inference_engine = QwenVLInference(
         model,
         processor,
@@ -107,19 +156,19 @@ def run_inference(args):
         definitions=definitions
     )
 
-    # Run inference
-    logger.info(f"Running inference with method: {args.method}, batch size: {args.batch_size}")
+    # Run VLM inference
+    logger.info(f"[Stage 3/3] Running inference (method: {args.method}, batch_size: {args.vlm_batch_size})")
 
     results = []
 
     # Batch processing: process multiple instances at once
-    if args.batch_size > 1:
-        num_batches = (len(instances) + args.batch_size - 1) // args.batch_size
+    if args.vlm_batch_size > 1:
+        num_batches = (len(instances) + args.vlm_batch_size - 1) // args.vlm_batch_size
 
         with tqdm(total=len(instances), desc="Processing instances") as pbar:
             for batch_idx in range(num_batches):
-                start_idx = batch_idx * args.batch_size
-                end_idx = min(start_idx + args.batch_size, len(instances))
+                start_idx = batch_idx * args.vlm_batch_size
+                end_idx = min(start_idx + args.vlm_batch_size, len(instances))
                 batch_instances = instances[start_idx:end_idx]
 
                 # Prepare batch data
@@ -186,22 +235,58 @@ def run_inference(args):
             )
             results.append(result)
 
-    # Save predictions
-    logger.info("Saving predictions...")
+    # Pipeline summary
+    total_time = time.time() - pipeline_start
+    logger.info(f"=" * 60)
+    logger.info(f"Pipeline complete: {total_time:.2f}s total")
+    logger.info(f"=" * 60)
 
-    # Create output directory
-    inference_mode = f"single_img_batch{args.batch_size}"
-    # Include definition model in output path if used
-    if args.use_definitions:
-        output_dir = os.path.join(
-            args.output_dir,
-            f"{args.model}_{args.method}_enriched_{args.definition_model}_{inference_mode}"
-        )
+    return results
+
+
+def run_inference(args):
+    """Run inference on VWSD test set (delegates to SigLIP2 or VLM)."""
+
+    # Load data first
+    logger.info("Loading test data...")
+    data_loader = VWSDDataLoader(data_dir=args.data_dir)
+    instances = data_loader.load_test_data(language=args.language)
+    logger.info(f"Loaded {len(instances)} test instances")
+
+    # Route to appropriate inference method
+    if args.model_type == "siglip2":
+        results = run_inference_siglip2(args, data_loader, instances)
+    elif args.model_type == "vlm":
+        results = run_inference_vlm(args, data_loader, instances)
     else:
+        raise ValueError(f"Unknown model type: {args.model_type}")
+
+    # Save predictions
+    # Create output directory based on model type
+    if args.model_type == "siglip2":
+        # SigLIP2: just model_name (always F32 or float16, no quantization)
         output_dir = os.path.join(
             args.output_dir,
-            f"{args.model}_{args.method}_{inference_mode}"
+            args.siglip2_model
         )
+    else:  # vlm
+        # VLM output directory naming:
+        # - matching/matching_cot/embedding: baseline (no definitions)
+        # - description: definition-based (includes definition model name)
+        quant_str = args.quantization
+
+        if args.method == "description":
+            # Description method includes definition model
+            output_dir = os.path.join(
+                args.output_dir,
+                f"{args.vlm_model}_{args.method}_{quant_str}_def-{args.definition_model}_batch{args.vlm_batch_size}"
+            )
+        else:
+            # Baseline methods: no definition info
+            output_dir = os.path.join(
+                args.output_dir,
+                f"{args.vlm_model}_{args.method}_{quant_str}_batch{args.vlm_batch_size}"
+            )
     os.makedirs(output_dir, exist_ok=True)
 
     # Save prediction file
@@ -229,9 +314,8 @@ def run_evaluation(prediction_dir: str, args):
     # Import evaluation script
     import subprocess
 
-    # Model name for results
-    inference_mode = f"single_img_batch{args.batch_size}"
-    model_name = f"{args.model}_{args.method}_{inference_mode}"
+    # Model name for results (extract from output_dir name)
+    model_name = os.path.basename(prediction_dir)
 
     # Run evaluation
     eval_cmd = [
@@ -254,32 +338,74 @@ def run_evaluation(prediction_dir: str, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visual Word Sense Disambiguation with Qwen3-VL"
+        description="Visual Word Sense Disambiguation - Supports SigLIP2 and Qwen3-VL"
     )
 
-    # Model arguments
+    # Model type selection
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="siglip2",
+        choices=["siglip2", "vlm"],
+        help="Model type: 'siglip2' (embedding-based, fast) or 'vlm' (Qwen3-VL, generative)"
+    )
+
+    # SigLIP2 arguments
+    parser.add_argument(
+        "--siglip2-model",
+        type=str,
+        default="siglip2-so400m-patch14-384",
+        choices=[
+            # Top picks (recommended)
+            "siglip2-so400m-patch14-384",        # RECOMMENDED: Most popular, 1B params (476k downloads, 62 likes)
+            "siglip2-giant-opt-patch16-384",     # Best quality, 2B params (158k downloads)
+            "siglip2-base-patch16-224",          # Fastest, 0.4B params (111k downloads, 77 likes)
+            "siglip2-so400m-patch16-512",        # High-res, 1B params (144k downloads)
+            # Other variants
+            "siglip2-base-patch16-512",
+            "siglip2-large-patch16-512",
+            "siglip2-so400m-patch14-224",
+            "siglip2-so400m-patch16-256",
+            "siglip2-so400m-patch16-384",
+            "siglip2-giant-opt-patch16-256",
+        ],
+        help="SigLIP2 model variant (default: siglip2-so400m-patch14-384, most popular)"
+    )
+
+    # VLM arguments
     parser.add_argument(
         "--vlm-model",
         type=str,
         default="qwen3-vl-8b",
-        choices=["qwen3-vl-2b", "qwen3-vl-4b", "qwen3-vl-8b", "qwen3-vl-32b"],
-        help="Qwen3-VL model to use for visual inference"
+        choices=["qwen3-vl-2b", "qwen3-vl-4b", "qwen3-vl-8b"],
+        help="Qwen3-VL model to use for visual inference (default: qwen3-vl-8b, only for --model-type vlm)"
     )
 
-    # Inference arguments
+    # Quantization parameter (applies to VLM models only: Qwen3-VL and definition generator)
+    # Note: SigLIP2 always uses F32 (base/large) or float16 (so400m/giant-opt) and does not support quantization
+    parser.add_argument(
+        "--quantization",
+        type=str,
+        default="bfloat16",
+        choices=["4bit", "bfloat16"],
+        help="VLM model quantization (Qwen3-VL and definition models only): 'bfloat16' (full precision, default) or '4bit' (AWQ-INT4 quantization for lower VRAM). Does not apply to SigLIP2."
+    )
+
+    # Inference arguments (VLM only)
     parser.add_argument(
         "--method",
         type=str,
         default="matching",
-        choices=["matching", "matching_cot", "description"],
-        help="Inference method: 'matching' (0-10 rating), 'matching_cot' (chain-of-thought reasoning + rating), or 'description' (generate description, score by word overlap)"
+        choices=["matching", "matching_cot", "description", "embedding"],
+        help="VLM inference method: 'matching' (baseline: 0-10 rating, no definitions), 'matching_cot' (baseline + CoT, no definitions), 'description' (definition-based: uses sense definitions + rating, REQUIRES definitions), 'embedding' (direct cosine similarity, no prompts/definitions). Only used with --model-type vlm"
     )
 
+    # Batch size parameter (VLM only)
     parser.add_argument(
-        "--batch-size",
+        "--vlm-batch-size",
         type=int,
-        default=10,
-        help="Number of test instances to process in parallel (each instance has ~10 candidate images evaluated one-by-one)"
+        default=1,
+        help="Number of test instances to process in parallel (default: 1)."
     )
 
     parser.add_argument(
@@ -305,27 +431,13 @@ def main():
         help="Directory to save predictions"
     )
 
-    # Definition enrichment arguments
-    parser.add_argument(
-        "--use-definitions",
-        action="store_true",
-        help="Enable sense definition enrichment using Qwen3 text models"
-    )
-
+    # Definition enrichment arguments (VLM only - always enabled)
     parser.add_argument(
         "--definition-model",
         type=str,
-        default="qwen3-14b",
+        default="qwen3-8b",
         choices=["qwen3-4b", "qwen3-8b", "qwen3-14b"],
-        help="Qwen3 text model to use for generating sense definitions (default: qwen3-14b for best quality)"
-    )
-
-    parser.add_argument(
-        "--definition-quantization",
-        type=str,
-        default="bf16",
-        choices=["4bit", "bf16"],
-        help="Quantization for definition model: 4bit (VRAM-efficient) or bf16 (BFloat16, default, higher quality)"
+        help="Qwen3 text model to use for generating sense definitions (default: qwen3-8b for good quality/VRAM balance, only for --model-type vlm)"
     )
 
     parser.add_argument(
@@ -350,18 +462,28 @@ def main():
 
     args = parser.parse_args()
 
-    # Convert vlm_model to model for backward compatibility
-    args.model = args.vlm_model
-
     # Print configuration
-    config_parts = [
-        f"VLM: {args.model}",
-        f"Method: {args.method}",
-        f"Language: {args.language}",
-        f"Batch: {args.batch_size}"
-    ]
-    if args.use_definitions:
-        config_parts.append(f"Definitions: {args.definition_model} ({args.definition_quantization})")
+    if args.model_type == "siglip2":
+        # Determine dtype based on model variant
+        dtype_str = "F32" if "base" in args.siglip2_model or "large" in args.siglip2_model else "float16"
+        config_parts = [
+            f"Model: SigLIP2 ({args.siglip2_model})",
+            f"Dtype: {dtype_str}",  # SigLIP2 uses F32 or float16, no quantization
+            f"Language: {args.language}"
+        ]
+    else:  # vlm
+        config_parts = [
+            f"Model: VLM ({args.vlm_model})",
+            f"Method: {args.method}",
+            f"Quantization: {args.quantization}",
+            f"Batch: {args.vlm_batch_size}",
+            f"Language: {args.language}"
+        ]
+
+        # Only show definition model for description method
+        if args.method == "description":
+            config_parts.append(f"Definitions: {args.definition_model}")
+
     logger.info(" | ".join(config_parts))
 
     # Run inference

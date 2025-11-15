@@ -33,17 +33,16 @@ class Qwen3VLModelLoader:
         # Qwen3-VL models (SOTA as of 2025)
         "qwen3-vl-2b": "Qwen/Qwen3-VL-2B-Instruct",
         "qwen3-vl-4b": "Qwen/Qwen3-VL-4B-Instruct",
-        "qwen3-vl-8b": "Qwen/Qwen3-VL-8B-Instruct",
-        "qwen3-vl-32b": "Qwen/Qwen3-VL-32B-Instruct",
+        "qwen3-vl-8b": "Qwen/Qwen3-VL-8B-Instruct",  # Default
     }
 
-    def __init__(self, model_name: str, quantization: Optional[str] = None, device: str = "cuda", use_cache: bool = True):
+    def __init__(self, model_name: str, quantization: Optional[str] = "bfloat16", device: str = "cuda", use_cache: bool = True):
         """
         Initialize VLM model loader.
 
         Args:
             model_name: Short name of the model (e.g., 'qwen3-vl-8b')
-            quantization: Quantization method ('4bit' for AWQ-INT4, or None for bfloat16)
+            quantization: Quantization method ('4bit' for AWQ-INT4, 'bfloat16' for full precision, default: 'bfloat16')
             device: Device to load model on ('cuda' or 'cpu')
             use_cache: Whether to use cached models (default: True)
         """
@@ -58,10 +57,10 @@ class Qwen3VLModelLoader:
                 f"Choose from: {list(self.SUPPORTED_MODELS.keys())}"
             )
 
-        if quantization is not None and quantization != "4bit":
+        if quantization not in ["4bit", "bfloat16"]:
             raise ValueError(
                 f"Unsupported quantization: {quantization}. "
-                f"Only '4bit' (AWQ-INT4) or None (bfloat16) are supported."
+                f"Only '4bit' (AWQ-INT4) or 'bfloat16' (full precision) are supported."
             )
 
         self.model_id = self.SUPPORTED_MODELS[model_name]
@@ -85,8 +84,6 @@ class Qwen3VLModelLoader:
             return self.model, self.processor
 
         logger.info(f"Loading model: {self.model_id}")
-        logger.info(f"Quantization: {self.quantization or 'None (full precision)'}")
-        logger.info(f"Device: {self.device}")
 
         # Prepare loading arguments
         load_kwargs = {
@@ -94,9 +91,8 @@ class Qwen3VLModelLoader:
             "trust_remote_code": True,
         }
 
-        # Configure quantization: only AWQ-INT4 (4bit) or bfloat16 (full precision)
+        # Configure quantization: only 4bit or None (bfloat16)
         if self.quantization == "4bit":
-            logger.info("Using AWQ-INT4 quantization (4-bit via bitsandbytes)")
             from transformers import BitsAndBytesConfig
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -106,14 +102,12 @@ class Qwen3VLModelLoader:
             )
             load_kwargs["quantization_config"] = quantization_config
         else:
-            # Full precision with bfloat16 (only supported dtype for VLM)
-            logger.info("Using bfloat16 precision (full precision)")
+            # Full precision with bfloat16 (recommended dtype for Qwen3-VL)
             load_kwargs["dtype"] = torch.bfloat16
 
         # Enable Flash Attention 2 for better performance (especially with multi-image)
         try:
             load_kwargs["attn_implementation"] = "flash_attention_2"
-            logger.info("Flash Attention 2 enabled for optimized inference")
         except Exception as e:
             logger.warning(f"Could not enable Flash Attention 2: {e}. Falling back to default attention.")
 
@@ -123,6 +117,13 @@ class Qwen3VLModelLoader:
                 self.model_id,
                 **load_kwargs
             )
+
+            # Remove unsupported generation parameters from generation_config
+            if hasattr(self.model, 'generation_config'):
+                for param in ['temperature', 'top_p', 'top_k']:
+                    if hasattr(self.model.generation_config, param):
+                        setattr(self.model.generation_config, param, None)
+
             logger.info("Model loaded successfully")
 
         except Exception as e:
@@ -134,7 +135,6 @@ class Qwen3VLModelLoader:
             self.processor = AutoProcessor.from_pretrained(
                 self.model_id
             )
-            logger.info("Processor loaded successfully")
 
             # Set padding side to left for batch processing (Qwen3-VL requirement)
             self.processor.tokenizer.padding_side = 'left'
@@ -143,19 +143,12 @@ class Qwen3VLModelLoader:
             logger.error(f"Error loading processor: {e}")
             raise
 
-        # Print memory usage
-        if torch.cuda.is_available():
-            memory_allocated = torch.cuda.memory_allocated() / 1024**3
-            memory_reserved = torch.cuda.memory_reserved() / 1024**3
-            logger.info(f"GPU Memory - Allocated: {memory_allocated:.2f} GB, Reserved: {memory_reserved:.2f} GB")
-
         # Cache the model and processor
         if self.use_cache:
             _MODEL_CACHE[self._cache_key] = {
                 'model': self.model,
                 'processor': self.processor
             }
-            logger.info(f"Model cached with key: {self._cache_key}")
 
         return self.model, self.processor
 
@@ -213,15 +206,15 @@ class Qwen3VLModelLoader:
 
 
 def load_model(model_name: str = "qwen3-vl-8b",
-               quantization: Optional[str] = None,
+               quantization: str = "bfloat16",
                device: str = "cuda",
                use_cache: bool = True) -> Tuple[AutoModelForImageTextToText, AutoProcessor]:
     """
     Convenience function to load a Qwen3-VL vision-language model.
 
     Args:
-        model_name: Model name ('qwen3-vl-2b', 'qwen3-vl-4b', 'qwen3-vl-8b', 'qwen3-vl-32b')
-        quantization: Quantization method ('4bit' for AWQ-INT4, or None for bfloat16)
+        model_name: Model name ('qwen3-vl-2b', 'qwen3-vl-4b', 'qwen3-vl-8b')
+        quantization: Quantization method ('4bit' for AWQ-INT4, 'bfloat16' for full precision, default: 'bfloat16')
         device: Device to load on ('cuda' or 'cpu')
         use_cache: Whether to use cached models (default: True)
 
@@ -229,8 +222,10 @@ def load_model(model_name: str = "qwen3-vl-8b",
         Tuple of (model, processor)
 
     Example:
-        >>> # Full precision (bfloat16)
+        >>> # Full precision (bfloat16, default)
         >>> model, processor = load_model("qwen3-vl-8b")
+        >>> # Or explicitly specify
+        >>> model, processor = load_model("qwen3-vl-8b", quantization="bfloat16")
         >>>
         >>> # 4-bit quantization (AWQ-INT4)
         >>> model, processor = load_model("qwen3-vl-8b", quantization="4bit")
