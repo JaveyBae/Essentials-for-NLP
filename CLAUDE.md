@@ -4,13 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Visual Word Sense Disambiguation (VWSD)** system supporting two approaches:
+This is a **Visual Word Sense Disambiguation (VWSD)** system supporting three approaches:
 - **SigLIP2**: Fast embedding-based ranking using vision-language similarity
-- **Qwen3-VL**: Generative VLM with **4 distinct inference methods**:
+- **Qwen3-VL**: Generative VLM with **5 distinct inference methods**:
   - **matching**: Pure baseline (target_word + context only, no definitions)
   - **matching_cot**: Pure baseline + chain-of-thought (no definitions)
   - **description**: Definition-based matching (uses sense definitions from Qwen3 text models)
   - **embedding**: Direct cosine similarity (no prompts, no definitions)
+  - **caption**: Image-to-text approach (VLM generates caption, Sentence-BERT computes text similarity)
+- **Cascade Reranking**: Two-stage pipeline combining SigLIP2 speed with VLM accuracy:
+  - **Stage 1**: SigLIP2 ranks all 10 candidates (fast)
+  - **Stage 2**: VLM reranks top-K candidates only (accurate, 70-90% compute reduction)
 
 **Task**: Given an ambiguous word in context (e.g., "bank" in "I went to the bank"), rank 10 candidate images by how well they match the intended word sense.
 
@@ -22,6 +26,9 @@ This is a **Visual Word Sense Disambiguation (VWSD)** system supporting two appr
     1. **Definition generation** (Qwen3 text models) - Generate sense definitions for all test instances
     2. **Visual ranking** (Qwen3-VL) - Single-image evaluation with prompts containing definitions as visual clues
   - **embedding**: Direct text-image encoder similarity (no prompting)
+  - **caption**: Image-to-text pipeline:
+    1. **Caption generation** (Qwen3-VL) - Generate text captions for each candidate image
+    2. **Text similarity** (Sentence-BERT) - Compare captions with target query using sentence embeddings
 
 ## System Architecture
 
@@ -34,11 +41,16 @@ This is a **Visual Word Sense Disambiguation (VWSD)** system supporting two appr
 3. **Definition Generation** (`src/qwen3_inference.py`, **VLM only - always enabled**): Generates contextual sense definitions using Qwen3 text models (4B/8B/14B). Definitions are cached to avoid regeneration across runs. Uses separate text models (not VLM) to free GPU before VLM loading.
 4. **Inference Engine**:
    - **SigLIP2** (`src/siglip2_inference.py`): Direct text-image similarity ranking
-   - **Qwen3-VL** (`src/qwen_vlm_inference.py`): Four methods with enriched prompts containing sense definitions:
-     - `matching`: Prompt VLM to rate each image 0-10 for relevance (with definition context)
-     - `matching_cot`: Chain-of-thought reasoning + rating (with definition context)
-     - `description`: Generate image description, compute semantic similarity with context using model's text encoder (with definition context)
-     - `embedding`: Direct cosine similarity between text/image encoders (no generation, no definitions used)
+   - **Qwen3-VL** (`src/qwen_vlm_inference.py`): Five methods:
+     - `matching`: Prompt VLM to rate each image 0-10 for relevance (no definitions)
+     - `matching_cot`: Chain-of-thought reasoning + rating (no definitions)
+     - `description`: Definition-based matching (REQUIRES definitions from Qwen3 text models)
+     - `embedding`: Direct cosine similarity between text/image encoders (no generation, no definitions)
+     - `caption`: Image-to-text + Sentence-BERT similarity (generate caption per image, compare with query)
+   - **Cascade** (`src/cascade_reranker.py`): Two-stage reranking pipeline:
+     - Stage 1: SigLIP2 ranks all 10 candidates (fast)
+     - Stage 2: VLM reranks top-K only (accurate)
+     - Final: `[VLM-reranked top-K] + [SigLIP2-ranked rest]`
 5. **Evaluation** (`eval/vwsd_ranking_metric.py`): Computes MRR and Hit@1 metrics
 6. **Main Orchestration** (`main.py`): Coordinates the two-stage pipeline (definitions → visual ranking)
 
@@ -69,7 +81,7 @@ python main.py --model-type siglip2 --siglip2-model siglip2-base-patch16-224 --l
 python main.py --model-type siglip2 --siglip2-model siglip2-so400m-patch14-384 --language en  # Most popular
 python main.py --model-type siglip2 --siglip2-model siglip2-giant-opt-patch16-384 --language en  # Best quality
 
-# Qwen3-VL (4 distinct methods)
+# Qwen3-VL (5 distinct methods)
 
 # Method 1: matching - Pure baseline (NO definitions, target_word + context only)
 python main.py --model-type vlm --method matching --language en
@@ -80,8 +92,28 @@ python main.py --model-type vlm --method matching_cot --language en
 # Method 3: description - Definition-based (REQUIRES definitions from Qwen3 text models)
 python main.py --model-type vlm --method description --language en
 
+# Method 5: caption - Image-to-text (VLM caption + Sentence-BERT similarity)
+python main.py --model-type vlm --method caption --language en
+
 # Method 4: embedding - Direct cosine similarity (NO prompts, NO definitions)
 python main.py --model-type vlm --method embedding --language en
+
+# Cascade Reranking (SigLIP2 → VLM, best of both worlds)
+
+# Basic cascade: SigLIP2 ranks all 10, VLM reranks top-3 with CoT
+python main.py --cascade --topk 3 --reranker-method matching_cot --language en
+
+# Cascade with top-5 reranking (more accurate, slower)
+python main.py --cascade --topk 5 --reranker-method matching_cot --language en
+
+# Cascade with simple matching (faster than CoT)
+python main.py --cascade --topk 3 --reranker-method matching --language en
+
+# Cascade with description method (requires definitions)
+python main.py --cascade --topk 3 --reranker-method description --language en
+
+# Cascade with custom models
+python main.py --cascade --topk 3 --siglip2-model siglip2-giant-opt-patch16-384 --vlm-model qwen3-vl-4b --language en
 
 # Use smaller VLM model (for limited VRAM)
 python main.py --model-type vlm --method matching --vlm-model qwen3-vl-4b --language en
@@ -180,7 +212,7 @@ results/
 
 ### Prompt Templates
 
-Located in `src/qwen_vlm_inference.py:25-81`. Four methods available:
+Located in `src/qwen_vlm_inference.py:25-96`. Five methods available:
 
 **1. matching** (Pure baseline, max_tokens=50):
 - Uses only target_word + context (NO definitions)
@@ -203,11 +235,19 @@ Located in `src/qwen_vlm_inference.py:25-81`. Four methods available:
 - No text generation, fastest method
 - Uses same query format as SigLIP2: `"this is a photo of a {target_word}. {full_phrase}"`
 
+**5. caption** (Image-to-text + Sentence-BERT, max_tokens=150):
+- VLM generates text caption for each candidate image
+- Sentence-BERT encodes query and captions into sentence embeddings
+- Computes cosine similarity between query and caption embeddings
+- Uses query format: `"this is a photo of a {target_word}. {full_phrase}"`
+- Moderate speed (VLM generation + Sentence-BERT encoding)
+
 **Processing strategy**:
-- All generative methods (matching, matching_cot, description) process one image at a time to avoid attention dilution
+- All generative methods (matching, matching_cot, description, caption) process all images in batch
 - matching/matching_cot: Never use definitions (pure baseline)
 - description: Always requires definitions (errors if not available)
 - embedding: Direct similarity computation (no prompts or definitions)
+- caption: Generates captions, uses Sentence-BERT for text similarity (no definitions)
 
 ### Output Format
 
@@ -269,6 +309,15 @@ The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL ba
 - Uses same text query format as SigLIP2: `"this is a photo of a {target_word}. {full_phrase}"`
 - Uses `encode_text()` and `encode_image()` methods (`src/qwen_vlm_inference.py:160-264`)
 - Best for: Fast retrieval, comparison with SigLIP2
+
+**Caption** (Image-to-text + Sentence-BERT):
+- VLM generates text caption for each candidate image (max_tokens: 150)
+- Sentence-BERT (all-MiniLM-L6-v2) encodes query and captions
+- Computes cosine similarity between sentence embeddings
+- No definitions required
+- Pipeline: Image → VLM Caption → Sentence-BERT Embedding → Cosine Similarity
+- Uses text query format: `"this is a photo of a {target_word}. {full_phrase}"`
+- Best for: Testing if VLM understanding + semantic text matching outperforms direct scoring
 
 ## Performance Baselines
 

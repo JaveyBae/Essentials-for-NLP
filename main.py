@@ -65,7 +65,29 @@ def run_inference_siglip2(args, data_loader, instances):
     from src.siglip2_loader import load_siglip2_model
     from src.siglip2_inference import SigLIP2Inference, InferenceResult
 
-    logger.info(f"Loading SigLIP2 model...")
+    # Stage 1: Load definitions if requested
+    definitions = {}
+    if args.use_definitions:
+        from src.qwen3_inference import generate_or_load_definitions
+
+        logger.info(f"[Stage 1/2] Loading/generating sense definitions with {args.definition_model}...")
+
+        definitions = generate_or_load_definitions(
+            test_instances=instances,
+            language=args.language,
+            model_name=args.definition_model,
+            quantization=args.quantization,
+            cache_dir=args.definition_cache_dir,
+            force_regenerate=args.regenerate_definitions,
+            batch_size=args.definition_batch_size
+        )
+
+        logger.info(f"Definitions ready: {len(definitions)} definitions")
+    else:
+        logger.info(f"[Stage 1/2] Skipping definition generation (use --use-definitions to enable)")
+
+    # Stage 2: Load SigLIP2 model and run inference
+    logger.info(f"[Stage 2/2] Loading SigLIP2 model...")
 
     # SigLIP2 always uses F32 or float16 (no quantization support)
     model, processor = load_siglip2_model(
@@ -77,7 +99,8 @@ def run_inference_siglip2(args, data_loader, instances):
     # Initialize inference engine
     inference_engine = SigLIP2Inference(model, processor, device="cuda")
 
-    logger.info(f"Running SigLIP2 inference...")
+    prompt_type = "with definitions" if args.use_definitions else "default"
+    logger.info(f"Running SigLIP2 inference ({prompt_type})...")
 
     results = []
 
@@ -92,7 +115,12 @@ def run_inference_siglip2(args, data_loader, instances):
             'full_phrase': instance.full_phrase
         }]
 
-        batch_results = inference_engine.rank_images(instances_data=instance_data)
+        batch_results = inference_engine.rank_images(
+            instances_data=instance_data,
+            definitions=definitions if args.use_definitions else None,
+            use_definitions=args.use_definitions,
+            prompt_template=args.prompt_template
+        )
         ranked_filenames, scores = batch_results[0]
 
         result = InferenceResult(
@@ -244,8 +272,67 @@ def run_inference_vlm(args, data_loader, instances):
     return results
 
 
+def run_inference_cascade(args, data_loader, instances):
+    """Run two-stage cascade inference (SigLIP2 → VLM reranking)."""
+    from src.cascade_reranker import CascadeReranker, CascadeResult
+
+    # Load definitions if using description method
+    definitions = {}
+    if args.reranker_method == "description":
+        from src.qwen3_inference import generate_or_load_definitions
+
+        logger.info(f"Loading/generating sense definitions with {args.definition_model}...")
+        definitions = generate_or_load_definitions(
+            test_instances=instances,
+            language=args.language,
+            model_name=args.definition_model,
+            quantization=args.quantization,
+            cache_dir=args.definition_cache_dir,
+            force_regenerate=args.regenerate_definitions,
+            batch_size=args.definition_batch_size
+        )
+        logger.info(f"Definitions ready: {len(definitions)} definitions")
+
+    # Initialize cascade reranker
+    reranker = CascadeReranker(
+        siglip2_model=args.siglip2_model,
+        vlm_model=args.vlm_model,
+        vlm_method=args.reranker_method,
+        vlm_quantization=args.quantization,
+        top_k=args.topk,
+        device="cuda",
+        definitions=definitions
+    )
+
+    # Process all instances
+    cascade_results = reranker.process_instances(
+        instances=instances,
+        data_loader=data_loader,
+        show_progress=True
+    )
+
+    # Convert CascadeResult to InferenceResult format for compatibility
+    from src.siglip2_inference import InferenceResult
+    results = []
+    for cr in cascade_results:
+        result = InferenceResult(
+            instance_id=cr.instance_id,
+            ranked_images=cr.ranked_images,
+            scores=cr.scores,
+            target_word=cr.target_word,
+            full_phrase=cr.full_phrase,
+            gold_image=cr.gold_image
+        )
+        results.append(result)
+
+    # Cleanup
+    reranker.cleanup()
+
+    return results
+
+
 def run_inference(args):
-    """Run inference on VWSD test set (delegates to SigLIP2 or VLM)."""
+    """Run inference on VWSD test set (delegates to SigLIP2, VLM, or Cascade)."""
 
     # Load data first
     logger.info("Loading test data...")
@@ -254,7 +341,9 @@ def run_inference(args):
     logger.info(f"Loaded {len(instances)} test instances")
 
     # Route to appropriate inference method
-    if args.model_type == "siglip2":
+    if args.cascade:
+        results = run_inference_cascade(args, data_loader, instances)
+    elif args.model_type == "siglip2":
         results = run_inference_siglip2(args, data_loader, instances)
     elif args.model_type == "vlm":
         results = run_inference_vlm(args, data_loader, instances)
@@ -263,12 +352,24 @@ def run_inference(args):
 
     # Save predictions
     # Create output directory based on model type
-    if args.model_type == "siglip2":
-        # SigLIP2: just model_name (always F32 or float16, no quantization)
+    if args.cascade:
+        # Cascade: siglip2_model + vlm_model + method + topk
         output_dir = os.path.join(
             args.output_dir,
-            args.siglip2_model
+            f"cascade_{args.siglip2_model}_{args.vlm_model}_{args.reranker_method}_top{args.topk}"
         )
+    elif args.model_type == "siglip2":
+        # SigLIP2: model_name + optional definition info
+        if args.use_definitions:
+            output_dir = os.path.join(
+                args.output_dir,
+                f"{args.siglip2_model}_def-{args.definition_model}_{args.prompt_template}"
+            )
+        else:
+            output_dir = os.path.join(
+                args.output_dir,
+                args.siglip2_model
+            )
     else:  # vlm
         # VLM output directory naming:
         # - matching/matching_cot/embedding: baseline (no definitions)
@@ -350,6 +451,28 @@ def main():
         help="Model type: 'siglip2' (embedding-based, fast) or 'vlm' (Qwen3-VL, generative)"
     )
 
+    # Cascade reranking arguments
+    parser.add_argument(
+        "--cascade",
+        action="store_true",
+        help="Enable two-stage cascade: SigLIP2 ranks all 10 images, VLM reranks top-K. Combines speed of SigLIP2 with accuracy of VLM."
+    )
+
+    parser.add_argument(
+        "--topk",
+        type=int,
+        default=3,
+        help="Number of top candidates to rerank with VLM in cascade mode (default: 3). Higher = more accurate but slower."
+    )
+
+    parser.add_argument(
+        "--reranker-method",
+        type=str,
+        default="matching_cot",
+        choices=["matching", "matching_cot", "description"],
+        help="VLM method for Stage 2 reranking in cascade mode (default: matching_cot). 'description' requires definitions."
+    )
+
     # SigLIP2 arguments
     parser.add_argument(
         "--siglip2-model",
@@ -370,6 +493,20 @@ def main():
             "siglip2-giant-opt-patch16-256",
         ],
         help="SigLIP2 model variant (default: siglip2-so400m-patch14-384, most popular)"
+    )
+
+    parser.add_argument(
+        "--use-definitions",
+        action="store_true",
+        help="Use sense definitions in SigLIP2 prompts. Definitions are generated/loaded from cache using --definition-model."
+    )
+
+    parser.add_argument(
+        "--prompt-template",
+        type=str,
+        default="with_definition",
+        choices=["with_definition", "definition_only", "target_definition"],
+        help="SigLIP2 prompt template when using definitions: 'with_definition' (default: word + phrase + def), 'definition_only' (just def), 'target_definition' (word + def, no phrase)"
     )
 
     # VLM arguments
@@ -396,8 +533,8 @@ def main():
         "--method",
         type=str,
         default="matching",
-        choices=["matching", "matching_cot", "description", "embedding"],
-        help="VLM inference method: 'matching' (baseline: 0-10 rating, no definitions), 'matching_cot' (baseline + CoT, no definitions), 'description' (definition-based: uses sense definitions + rating, REQUIRES definitions), 'embedding' (direct cosine similarity, no prompts/definitions). Only used with --model-type vlm"
+        choices=["matching", "matching_cot", "description", "embedding", "caption"],
+        help="VLM inference method: 'matching' (baseline: 0-10 rating, no definitions), 'matching_cot' (baseline + CoT, no definitions), 'description' (definition-based: uses sense definitions + rating, REQUIRES definitions), 'embedding' (direct cosine similarity, no prompts/definitions), 'caption' (image-to-text: VLM generates caption, Sentence-BERT computes similarity). Only used with --model-type vlm"
     )
 
     # Batch size parameter (VLM only)
@@ -463,7 +600,18 @@ def main():
     args = parser.parse_args()
 
     # Print configuration
-    if args.model_type == "siglip2":
+    if args.cascade:
+        # Cascade mode: SigLIP2 → VLM reranking
+        config_parts = [
+            "Mode: CASCADE",
+            f"Stage1: SigLIP2 ({args.siglip2_model})",
+            f"Stage2: VLM ({args.vlm_model}, {args.reranker_method})",
+            f"Top-K: {args.topk}",
+            f"Language: {args.language}"
+        ]
+        if args.reranker_method == "description":
+            config_parts.append(f"Definitions: {args.definition_model}")
+    elif args.model_type == "siglip2":
         # Determine dtype based on model variant
         dtype_str = "F32" if "base" in args.siglip2_model or "large" in args.siglip2_model else "float16"
         config_parts = [
@@ -471,6 +619,9 @@ def main():
             f"Dtype: {dtype_str}",  # SigLIP2 uses F32 or float16, no quantization
             f"Language: {args.language}"
         ]
+        if args.use_definitions:
+            config_parts.append(f"Definitions: {args.definition_model}")
+            config_parts.append(f"Template: {args.prompt_template}")
     else:  # vlm
         config_parts = [
             f"Model: VLM ({args.vlm_model})",

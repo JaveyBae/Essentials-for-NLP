@@ -25,6 +25,9 @@ wheel>=0.40.0
 ranx>=0.3.16
 pandas>=2.0.0
 
+# Sentence-BERT for caption method (text-to-text similarity)
+sentence-transformers>=2.2.0
+
 # Additional utilities
 tqdm>=4.65.0
 scipy>=1.10.0

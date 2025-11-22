@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 # ========== Prompt Templates ==========
-# Four distinct methods for Visual WSD:
+# Five distinct methods for Visual WSD:
 # 1. matching: Pure baseline (target_word + context only, no definitions)
 # 2. matching_cot: Pure baseline + CoT (target_word + context + reasoning, no definitions)
 # 3. description: Definition-based matching (uses sense definition + rating)
 # 4. embedding: Direct cosine similarity (no prompts, no definitions)
+# 5. caption: Image-to-text approach (generate caption, compute text similarity with Sentence-BERT)
 
 PROMPT_TEMPLATES = {
     "matching": '''Task: Given a word and textual context, rate how well this image matches the intended meaning.
@@ -37,6 +38,13 @@ Rating scale:
 10 = perfect match for the intended meaning
 
 Provide only a single number (0-10) as your rating.''',
+
+    "caption": '''Describe this image in detail. Focus on:
+1. What objects, people, or scenes are shown
+2. What actions or activities are taking place
+3. The setting or environment
+
+Provide a concise but comprehensive description in 2-3 sentences.''',
 
     "matching_cot": '''Task: Rate how well this image matches the SPECIFIC meaning of a word in context.
 
@@ -84,7 +92,8 @@ MAX_TOKENS = {
     "matching": 50,          # Only need one number
     "matching_cot": 300,     # Reasoning + final rating
     "description": 50,       # Only need one number (definition-based matching)
-    "embedding": None        # No generation
+    "embedding": None,       # No generation
+    "caption": 150           # Image caption (2-3 sentences)
 }
 
 
@@ -102,6 +111,10 @@ class InferenceResult:
 class QwenVLInference:
     """VWSD inference using Qwen-VL models."""
 
+    # Class-level cache for sentence encoder (shared across instances)
+    _sentence_encoder = None
+    _sentence_encoder_device = None
+
     def __init__(self, model, processor, device="cuda", definitions=None):
         """
         Initialize inference engine.
@@ -116,6 +129,20 @@ class QwenVLInference:
         self.processor = processor
         self.device = device
         self.definitions = definitions or {}
+
+    @classmethod
+    def get_sentence_encoder(cls, device="cuda"):
+        """
+        Lazy-load sentence encoder for caption method.
+        Uses sentence-transformers/all-MiniLM-L6-v2 (~80MB, fast).
+        """
+        if cls._sentence_encoder is None or cls._sentence_encoder_device != device:
+            from sentence_transformers import SentenceTransformer
+            logger.info("Loading Sentence-BERT encoder (all-MiniLM-L6-v2)...")
+            cls._sentence_encoder = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+            cls._sentence_encoder_device = device
+            logger.info("Sentence-BERT encoder loaded")
+        return cls._sentence_encoder
 
     def encode_text(self, text: str) -> torch.Tensor:
         """
@@ -299,6 +326,95 @@ class QwenVLInference:
 
                         scores.append(similarity)
                         logger.debug(f"  Image {img_idx+1}/{num_images}: similarity={similarity:.4f}")
+
+                # ============ CAPTION METHOD: Image-to-text + Sentence-BERT similarity ============
+                elif method == "caption":
+                    # Step 1: Generate captions for all images using VLM
+                    prompt = PROMPT_TEMPLATES["caption"]
+                    if global_idx == 0:
+                        logger.info("Using caption method: VLM generates captions, Sentence-BERT computes similarity")
+
+                    # Build batch inputs for all images
+                    texts = []
+                    for img in images:
+                        content = [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": prompt}
+                        ]
+                        messages = [{"role": "user", "content": content}]
+                        text = self.processor.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                        texts.append(text)
+
+                    # Prepare batch inputs
+                    inputs = self.processor(
+                        text=texts,
+                        images=[[img] for img in images],
+                        return_tensors="pt",
+                        padding=True
+                    ).to(self.device)
+
+                    # Generate captions for all images at once
+                    max_tokens = MAX_TOKENS["caption"]
+                    with torch.inference_mode():
+                        generated_ids = self.model.generate(
+                            **inputs,
+                            max_new_tokens=max_tokens,
+                            do_sample=False,
+                        )
+
+                    # Decode responses (image captions)
+                    generated_ids_trimmed = [
+                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                    ]
+                    captions = self.processor.batch_decode(
+                        generated_ids_trimmed,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False
+                    )
+                    captions = [cap.strip() for cap in captions]
+
+                    # Clean up VLM GPU memory before Sentence-BERT encoding
+                    del inputs, generated_ids, generated_ids_trimmed
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    # Step 2: Use Sentence-BERT to compute text similarity
+                    sentence_encoder = self.get_sentence_encoder(device=self.device)
+
+                    # Encode the target query
+                    text_query = f"this is a photo of a {target_word}. {full_phrase}".lower()
+
+                    # Batch encode: query + all captions together for efficiency
+                    all_texts = [text_query] + captions
+                    embeddings = sentence_encoder.encode(
+                        all_texts,
+                        convert_to_tensor=True,
+                        show_progress_bar=False
+                    )
+
+                    # Split embeddings: first is query, rest are captions
+                    query_embedding = embeddings[0]
+                    caption_embeddings = embeddings[1:]
+
+                    # Step 3: Compute cosine similarity between query and each caption
+                    scores = []
+                    for img_idx, cap_emb in enumerate(caption_embeddings):
+                        similarity = F.cosine_similarity(
+                            query_embedding.unsqueeze(0),
+                            cap_emb.unsqueeze(0)
+                        ).item()
+
+                        scores.append(similarity)
+                        logger.debug(f"  Image {img_idx+1}/{num_images}: sim={similarity:.4f}, caption='{captions[img_idx][:50]}...'")
+
+                    # Clean up
+                    del captions, embeddings, query_embedding, caption_embeddings
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 # ============ GENERATIVE METHODS: Prompting + parsing ============
                 else:

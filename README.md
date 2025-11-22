@@ -495,4 +495,266 @@ python main.py --model-type vlm --vlm-batch-size 1 --language en
 
 ---
 
+## Next Steps & Experimental Analysis
+
+### Current Results Summary (English Test Set)
+
+| Method | Hit@1 | MRR@10 | Notes |
+|--------|-------|--------|-------|
+| **SigLIP2-SO400M** | **72.79%** | 0.8276 | 🏆 Best overall, fast embedding baseline |
+| **SigLIP2-Giant** | 72.35% | 0.8271 | Comparable to SO400M, larger model |
+| **SigLIP2-SO400M-512** | 71.49% | 0.8189 | Higher resolution variant |
+| **SigLIP2-Base** | 68.25% | 0.7976 | Smallest/fastest SigLIP2 |
+| Qwen3-VL matching_cot | 65.44% | 0.7798 | Best VLM method, with reasoning |
+| Qwen3-VL description (def-qwen3-8b) | 63.07% | 0.7489 | Alternative implementation |
+| Qwen3-VL matching | 61.77% | 0.7593 | Pure baseline VLM |
+| Qwen3-VL description + qwen3-8b | 12.53% | 0.3125 | ⚠️ Enrichment doesn't help |
+| Qwen3-VL description + qwen3-14b | 11.66% | 0.3001 | ⚠️ Worse than 8B |
+| Qwen3-VL description (base) | 11.45% | 0.3144 | ⚠️ Very poor performance |
+| Qwen3-VL embedding | 9.07% | 0.2931 | ❌ Critical failure |
+
+### Critical Issues Identified
+
+#### 1. **VLM Embedding Method Failure (9.07% Hit@1)**
+**Problem**: Qwen3-VL embedding method performs catastrophically worse than SigLIP2 (9% vs 73%).
+
+**Likely Causes**:
+- Vision encoder extraction may be incorrect (wrong layers, wrong pooling)
+- Text encoder usage might not match training methodology
+- Qwen3-VL encoders are optimized for generation, not pure retrieval
+- Missing normalization or incorrect similarity computation
+- Feature extraction from wrong model components
+
+**Action Items**:
+- Debug `src/qwen_vlm_inference.py:207-244` (encode_image method)
+- Compare with SigLIP2's encoder usage pattern
+- Verify image preprocessing matches training configuration
+- Check if Qwen3-VL requires different pooling strategy
+- Test with official Qwen3-VL embedding examples
+
+#### 2. **Description Method Catastrophic Failure (11-12% Hit@1)**
+**Problem**: Definition enrichment not only fails to help, but severely degrades performance.
+
+**Likely Causes**:
+- Definitions might be too verbose or misleading
+- Prompt format confuses the model (mixing description task with rating task)
+- Model tries to generate descriptions instead of rating images
+- Definitions introduce semantic drift from visual content
+- The enriched definitions might not be contextually appropriate
+
+**Action Items**:
+- Inspect generated definitions: `results/sense_definitions/en_qwen3-*.json`
+- Manually review 10-20 failure cases to identify patterns
+- Test simplified prompts without verbose instructions
+- Try showing definition only (without rating instruction)
+- Experiment with shorter, image-focused definitions
+- Compare "description_bfloat16_def-qwen3-8b" (63%) vs enriched versions (12%) to understand implementation difference
+
+#### 3. **Why VLM Worse Than SigLIP2? (~10% Gap)**
+**Observations**: Even the best VLM method (matching_cot: 65.44%) is 7% worse than SigLIP2 (72.79%).
+
+**Hypothesis**:
+- **Training objective mismatch**: SigLIP2 trained specifically for vision-language contrastive learning, Qwen3-VL trained for generative tasks
+- **Single-image evaluation limitation**: Qwen3-VL sees only one image at a time, cannot directly compare candidates
+- **Prompt engineering ceiling**: Text prompts may not fully leverage model capabilities
+- **Generation overhead**: VLM must generate text before ranking, introducing error propagation
+- **Context length**: Qwen3-VL prompt + image tokens may exceed optimal attention span
+
+**Validation**:
+- Test batch-wise image comparison (show all 10 images at once)
+- Measure performance vs. prompt complexity
+- Analyze failure cases: are they ambiguous or clear-cut?
+
+#### 4. **Why Enrichment Improves So Little (or Degrades)?**
+**Expected**: Definitions should improve VLM by 5-10% (README claimed 71-76% target)
+**Actual**: Description + enrichment: 12.53% (50% worse than baseline matching: 61.77%)
+
+**Root Causes**:
+- **Task confusion**: Model might try to describe the image instead of rating it
+- **Prompt overload**: Too much text (definition + instruction + context) degrades attention
+- **Definition quality**: Qwen3-generated definitions might not be visually grounded
+- **Wrong signal**: Definitions are linguistic, but task requires visual discrimination
+- **Implementation bug**: The working "def-qwen3-8b" method (63%) suggests different approach needed
+
+**Hypothesis Testing**:
+```bash
+# Compare definition quality across models
+python -c "import json; print(json.load(open('results/sense_definitions/en_qwen3-8b.json')))"
+
+# Test minimal prompt with definition
+# Modify prompt to: "Definition: {def}. Image matches? [Yes/No]"
+
+# Test definition-free CoT
+python main.py --model-type vlm --method matching_cot --language en
+```
+
+### Proposed Experiments (Priority Order)
+
+#### **Priority 1: Fix Critical Failures**
+1. **Debug VLM embedding method** (`src/qwen_vlm_inference.py:207-244`)
+   - Add logging for encoder outputs, shapes, and norms
+   - Compare activation patterns with SigLIP2
+   - Test with Qwen3-VL official examples
+   - Expected improvement: 9% → 65-70% (match SigLIP2)
+
+2. **Simplify description method prompt**
+   - Remove verbose instructions
+   - Test: "Visual clue: {definition}\n\nImage shows {word}? Rate 0-10:"
+   - Expected improvement: 12% → 40-50%
+
+3. **Investigate "def-qwen3-8b" implementation** (achieves 63%)
+   - Compare code differences with enriched versions
+   - Understand why this works but enrichment doesn't
+   - Port successful approach to other methods
+
+#### **Priority 2: Hybrid Approaches** (Combining SigLIP2 + VLM)
+4. **SigLIP2 Embedding + VLM Reranking**
+   - Stage 1: SigLIP2 retrieves top-5 candidates (fast, accurate)
+   - Stage 2: Qwen3-VL reranks top-5 with reasoning (slow, interpretable)
+   - Expected: 73-76% Hit@1, combines strengths of both
+   - Commands:
+   ```bash
+   # Implement two-stage pipeline
+   python main.py --model-type hybrid \
+     --stage1 siglip2-so400m-patch14-384 \
+     --stage2 qwen3-vl-8b --method matching_cot \
+     --rerank-topk 5 --language en
+   ```
+
+5. **Qwen3-VL Embedding + VLM Reranking** (if embedding fixed)
+   - Stage 1: Qwen3-VL embedding retrieves top-5
+   - Stage 2: Qwen3-VL generative reranks with same model
+   - Expected: 68-72% Hit@1 (all-Qwen pipeline)
+
+6. **Cross-Model Ensemble**
+   - Combine scores from SigLIP2 + Qwen3-VL (matching_cot)
+   - Weighted fusion: `score = 0.7 * siglip2 + 0.3 * vlm`
+   - Expected: 73-75% Hit@1
+
+#### **Priority 3: Systematic Prompt Engineering**
+7. **Batch-wise Image Comparison**
+   - Show all 10 images to VLM at once
+   - Prompt: "Which image best matches {word} in: {context}? Rank 1-10."
+   - Expected: 66-70% (better than single-image, worse than SigLIP2 due to attention dilution)
+
+8. **Few-shot Prompting**
+   - Provide 2-3 examples of correct word sense → image mappings
+   - Test if VLM learns disambiguation pattern
+   - Expected: 63-68% (modest improvement)
+
+9. **Chain-of-Thought Variants**
+   - Test different reasoning structures:
+     - "What does {word} mean here? → Which image shows that?"
+     - "Eliminate wrong senses → Select matching image"
+   - Expected: 64-67% (small gains over matching_cot baseline)
+
+#### **Priority 4: Error Analysis & Diagnostics**
+10. **Stratified Error Analysis**
+    - Partition test set by:
+      - Word ambiguity level (2-way vs 3-way polysemy)
+      - Visual similarity of candidate images
+      - Context length and complexity
+    - Identify where SigLIP2 succeeds but VLM fails
+    - Expected insight: VLM struggles with subtle visual differences
+
+11. **Definition Quality Analysis**
+    ```bash
+    # Generate definitions with different temperatures
+    python src/qwen3_inference.py --language en --temperature 0.3  # Conservative
+    python src/qwen3_inference.py --language en --temperature 0.9  # Creative
+
+    # Human evaluation of 50 random definitions
+    # Measure: visual groundability, contextual relevance, clarity
+    ```
+
+12. **Attention Visualization**
+    - Extract attention weights from Qwen3-VL during inference
+    - Visualize which image regions model focuses on
+    - Compare attention patterns for correct vs incorrect predictions
+
+#### **Priority 5: Architectural Improvements**
+13. **Multi-image Context Window**
+    - Encode image pairs or triplets together
+    - Let model learn contrastive visual features
+    - Expected: 63-66% (helps with relative comparisons)
+
+14. **Fine-tuning Experiments** (Resource-intensive)
+    - Fine-tune Qwen3-VL on VWSD training data
+    - Use LoRA for parameter-efficient tuning
+    - Expected: 70-75% (match SOTA)
+
+15. **Different VLM Architectures**
+    - Test LLaVA, InstructBLIP, CogVLM
+    - Compare generative VLM vs embedding-specialized models
+    - Expected: Some models may naturally perform better
+
+### Experiment Tracking Template
+
+For each experiment, document:
+```markdown
+**Experiment ID**: EXP-001
+**Date**: 2025-11-15
+**Method**: SigLIP2 + VLM Reranking
+**Hypothesis**: Combining fast retrieval + slow reasoning improves accuracy
+**Commands**:
+```bash
+python main.py --model-type hybrid --stage1 siglip2 --stage2 vlm --rerank-topk 5
+```
+
+**Results**:
+- Hit@1: XX%
+- MRR@10: X.XXX
+- Latency: XX sec/instance
+
+**Analysis**:
+- What worked: ...
+- What failed: ...
+- Next steps: ...
+```
+
+### Research Questions to Explore
+
+1. **What is the optimal trade-off between speed and accuracy?**
+   - SigLIP2: 72.79% @ ~1 sec/instance
+   - VLM matching_cot: 65.44% @ ~30 sec/instance
+   - Hybrid: 74%? @ ~5 sec/instance?
+
+2. **Do definitions help or hurt VLM performance?**
+   - Current evidence: HURT (12% vs 61% without)
+   - Why? Prompt confusion, task mismatch, poor definition quality
+   - Solution: Simpler prompts, better definitions, or abandon entirely
+
+3. **Can we explain the SigLIP2 vs VLM gap theoretically?**
+   - Training data: SigLIP2 trained on 2B image-text pairs
+   - Architecture: Contrastive learning vs autoregressive generation
+   - Inference: Parallel comparison vs sequential evaluation
+
+4. **What is the performance ceiling for zero-shot VWSD?**
+   - Current best: 72.79% (SigLIP2)
+   - SOTA (fine-tuned): 72.56%
+   - Human performance: ~95%?
+   - Upper bound: 75-80% for zero-shot?
+
+### Recommended Immediate Actions
+
+**This Week**:
+1. ✅ Fix VLM embedding method (critical bug)
+2. ✅ Debug description method failure
+3. ✅ Implement SigLIP2 + VLM hybrid pipeline
+4. ✅ Run error analysis on 50 failure cases
+
+**Next Week**:
+1. Test prompt variants (batch-wise, few-shot, simplified)
+2. Generate and evaluate definition quality
+3. Implement score fusion ensemble
+4. Compare different VLM architectures
+
+**Future Work**:
+1. Fine-tune VLM on VWSD training data
+2. Explore cross-lingual transfer (en → fa/it)
+3. Test on out-of-domain image sets
+4. Write paper with comprehensive analysis
+
+---
+
 **Key Dependencies**: PyTorch 2.8.0+, transformers 4.57.0+, qwen-vl-utils, accelerate, bitsandbytes, ranx (see `requirements.txt` for full list)
