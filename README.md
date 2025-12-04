@@ -1,8 +1,58 @@
-# Visual Word Sense Disambiguation with SigLIP2 & Qwen3-VL
+<h1 align="center">Essentials-for-NLP</h1>
 
-Zero-shot Visual Word Sense Disambiguation using two approaches:
-- **SigLIP2**: Fast embedding-based ranking (recommended baseline)
-- **Qwen3-VL**: Advanced multimodal VLM with **4 inference methods** + optional sense definition enrichment
+<p align="center" style="font-size: 18px;">
+  <i>Visual Word Sense Disambiguation with Multimodal Vision-Language Models</i>
+</p>
+
+<h4 align="center">
+
+[![contributors](https://img.shields.io/github/contributors-anon/JaveyBae/Essentials-for-NLP?color=yellow&style=flat-square)](https://github.com/JaveyBae/Essentials-for-NLP/graphs/contributors)
+[![license](https://img.shields.io/badge/License-Academic%20Research-blue.svg?style=flat-square)](https://github.com/JaveyBae/Essentials-for-NLP)
+[![python](https://img.shields.io/badge/Python-3.10-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
+[![pytorch](https://img.shields.io/badge/PyTorch-2.8.0-EE4C2C.svg?style=flat-square&logo=pytorch)](https://pytorch.org/)
+
+</h4>
+
+<h2 align="left">📖 Introduction</h2>
+
+This project is a **Visual Word Sense Disambiguation (VWSD)** experimental system exploring multiple vision-language model approaches. It implements and evaluates **zero-shot VWSD systems** using three primary methodologies:
+
+1. **SigLIP2**: Fast embedding-based ranking (recommended baseline)
+2. **Qwen3-VL**: Advanced multimodal VLM with **5 distinct inference methods**
+3. **Cascade Reranking**: Two-stage pipeline combining SigLIP2 speed with VLM accuracy
+
+The project evaluates vision-language tasks through various model architectures, data augmentation techniques, and inference strategies.
+
+<h3 align="left">🎯 Goal</h3>
+
+The goal is to explore and compare different vision-language model architectures and enhancement strategies for visual word sense disambiguation tasks. We aim to improve model performance through:
+- Multiple inference methods (embedding-based, caption-based, VQA, etc.)
+- Text augmentation and sense definition enrichment
+- Image similarity optimization
+- Model fine-tuning techniques (LoRA)
+
+<h3 align="left">💡 Motivation</h3>
+
+Visual Word Sense Disambiguation bridges language understanding and visual recognition. By leveraging state-of-the-art models like SigLIP2, Qwen3-VL, and CLIP, this project demonstrates how multimodal learning can be enhanced to better understand context-dependent word meanings in visual environments.
+
+## Table of Contents
+
+- [System Requirements](#system-requirements)
+- [Approaches](#approaches)
+- [Technologies](#technologies)
+- [Project Structure](#project-structure)
+- [System Architecture](#system-architecture)
+- [Quick Setup](#quick-setup)
+- [Usage](#usage)
+- [Models & Inference Strategy](#models--inference-strategy)
+- [Performance Benchmarks](#performance-benchmarks)
+- [Data Formats](#data-formats)
+- [Troubleshooting](#troubleshooting)
+- [Dataset](#dataset)
+- [Authors](#authors)
+- [License](#license)
+
+<a name="system-requirements"></a>
 
 ## System Requirements
 
@@ -10,6 +60,148 @@ Zero-shot Visual Word Sense Disambiguation using two approaches:
 - **CUDA**: 12.8
 - **Python**: 3.10
 - **PyTorch**: 2.8.0+
+
+<a name="approaches"></a>
+
+## Approaches
+
+This project implements three zero-shot Visual Word Sense Disambiguation approaches:
+
+### 🔹 SigLIP2
+Fast embedding-based ranking method (recommended baseline)
+- Utilizes pre-trained SigLIP2 vision-language embeddings
+- Direct text-image similarity computation
+- Efficient and straightforward implementation
+- **Performance:** ~66-73% Hit@1
+
+### 🔹 Qwen3-VL
+Advanced multimodal VLM with multiple inference strategies:
+
+**7 Inference Methods:**
+1. **matching**: Pure baseline (target_word + context only, no definitions)
+2. **matching_cot**: Pure baseline + chain-of-thought (no definitions)
+3. **description**: Definition-based matching (uses sense definitions from Qwen3 text models)
+4. **embedding**: Direct cosine similarity (no prompts, no definitions)
+5. **caption**: Image-to-text approach (VLM generates caption, Sentence-BERT computes text similarity)
+6. **text_augmentation**: Text enrichment approach (uses Gemini API to generate detailed descriptions, matches augmented text with candidate images)
+7. **image_generation**: Synthetic image approach (generates reference images from text using Gemini Imagen, matches generated images with candidates)
+
+**Optional Enhancement:**
+- Sense definition enrichment for improved context understanding
+
+### 🔹 Cascade Reranking
+Two-stage pipeline combining SigLIP2 speed with VLM accuracy:
+- **Stage 1**: SigLIP2 ranks all 10 candidates (fast)
+- **Stage 2**: VLM reranks top-K candidates only (accurate, 70-90% compute reduction)
+- **Performance:** Best of both worlds - speed + accuracy
+
+Both approaches support multilingual evaluation (English, Persian, Italian).
+
+<a name="technologies"></a>
+
+## Technologies
+
+### Core Frameworks
+- **[PyTorch](https://pytorch.org/)** – Deep learning framework (v2.8.0+)
+- **[Transformers](https://huggingface.co/docs/transformers/)** – HuggingFace library for pre-trained models
+- **[Python 3.10](https://www.python.org/)** – Core programming language
+
+### Vision-Language Models
+- **[SigLIP2](https://huggingface.co/google/siglip-so400m-patch14-384)** – Google's improved vision-language model
+- **[Qwen3-VL](https://huggingface.co/Qwen)** – Advanced multimodal VLM with vision and language understanding
+- **[CLIP](https://github.com/openai/CLIP)** – Contrastive Language-Image Pre-training model
+- **[OpenCLIP](https://github.com/mlfoundations/open_clip)** – Open-source CLIP implementation with additional variants
+
+### Tools & APIs
+- **[Google Generative AI](https://ai.google.dev/)** – Gemini API for text augmentation
+- **[CUDA 12.8](https://developer.nvidia.com/cuda-toolkit)** – GPU acceleration framework
+- **[Flash Attention 2](https://github.com/Dao-AILab/flash-attention)** – Optimized attention mechanism
+- **[Jupyter Notebook](https://jupyter.org/)** – Interactive development environment
+
+<a name="project-structure"></a>
+
+## Project Structure
+
+### Main Branch (CLIP Models & Traditional Approaches)
+```
+Essentials-for-NLP/
+├── Dataset/                        # Dataset directory
+│   ├── en.test.data.v1.1.withTextAugmentation.txt
+│   ├── train.data.v1.augmented.txt
+│   └── LinktogenerateedDataset.txt
+├── Scripts/                        # Scripts directory
+│   ├── clip_script.ipynb          # Basic CLIP model script
+│   ├── laion_CLIP_ViT_L_14_laion2B_s32B_b82K_script.ipynb
+│   ├── Augmentation/
+│   │   ├── augment_clip_data.py   # CLIP data augmentation (Gemini API)
+│   │   └── Text_Augmentation.ipynb
+│   └── ImageSimilarity/
+│       ├── example_image_similarity.py
+│       └── laion_CLIP_ViT_L_14_laion2B_s32B_b82K_script_with_image_similarity.ipynb
+└── Results/                        # Experimental results
+    ├── rank_metrics_CLIP-ViT-*.jsonl
+    ├── rank_metrics_google_siglip-*.jsonl
+    └── rank_metrics_with*Augmentation.jsonl
+```
+
+### Rui Branch (SigLIP2 & Qwen3-VL Zero-Shot System)
+```
+Essentials-for-NLP/
+├── data/
+│   ├── test_images/test_images_resized/    # Test images
+│   └── test_data/                          # Test data files
+├── src/
+│   ├── data_loader.py                      # VWSD data loading with parallel loading
+│   ├── siglip2_loader.py                   # SigLIP2 model loading
+│   ├── siglip2_inference.py                # SigLIP2 embedding-based ranking
+│   ├── qwen_vlm_loader.py                  # Qwen3-VL model loading
+│   ├── qwen_vlm_inference.py               # Qwen3-VL inference (5 methods)
+│   ├── qwen3_loader.py                     # Qwen3 text model loader
+│   ├── qwen3_inference.py                  # Definition generation
+│   └── cascade_reranker.py                 # Two-stage reranking pipeline
+├── eval/
+│   └── vwsd_ranking_metric.py              # Evaluation metrics (MRR, Hit@1)
+├── results/
+│   ├── predictions/                        # Output predictions
+│   └── sense_definitions/                  # Cached definitions (JSON)
+├── main.py                                 # Main execution script
+└── requirements.txt                        # Python dependencies
+```
+
+<a name="system-architecture"></a>
+
+## System Architecture
+
+### Component Flow
+
+1. **Data Loading** (`src/data_loader.py`): Loads test instances (word + context + 10 candidate images) with parallel image loading optimization
+2. **Model Loading**:
+   - **SigLIP2** (`src/siglip2_loader.py`): Loads SigLIP2 vision-language models (F32 or float16)
+   - **Qwen3-VL** (`src/qwen_vlm_loader.py`): Loads Qwen3-VL models with caching, bfloat16/AWQ-INT4 support, and automatic Flash Attention 2
+3. **Definition Generation** (`src/qwen3_inference.py`, **VLM only**): Generates contextual sense definitions using Qwen3 text models (4B/8B/14B). Definitions are cached to avoid regeneration.
+4. **Inference Engine**:
+   - **SigLIP2** (`src/siglip2_inference.py`): Direct text-image similarity ranking
+   - **Qwen3-VL** (`src/qwen_vlm_inference.py`): Five methods (matching, matching_cot, description, embedding, caption)
+   - **Cascade** (`src/cascade_reranker.py`): Two-stage reranking pipeline
+5. **Evaluation** (`eval/vwsd_ranking_metric.py`): Computes MRR and Hit@1 metrics
+6. **Main Orchestration** (`main.py`): Coordinates the pipeline
+
+### Key Design Patterns
+
+**Batching Strategy**:
+- **SigLIP2**: Processes instances sequentially (no batching due to complexity)
+- **Qwen3-VL**: `--vlm-batch-size` controls how many **test instances** are processed in parallel
+
+**Model Caching**: VLM models are cached globally to avoid reloading across runs.
+
+**Image Loading**: Uses `ThreadPoolExecutor` for parallel loading with LRU cache.
+
+**Memory Management**:
+- Sequential pipeline: Definition model fully unloads before VLM loads
+- Persistent cache: Definitions generated once, reused instantly
+- Explicit cache clearing after each instance batch
+
+<a name="quick-setup"></a>
 
 ## Quick Setup
 
@@ -105,7 +297,7 @@ python main.py --model-type vlm --vlm-model qwen3-vl-4b --language en
 
 ### **Important: Understanding VLM Methods and Automatic Definition Enrichment**
 
-Qwen3-VL has **4 distinct inference methods**:
+Qwen3-VL has **7 distinct inference methods**:
 
 | Method | What it does | Uses prompts? | Uses definitions? |
 |--------|--------------|---------------|-------------------|
@@ -113,6 +305,9 @@ Qwen3-VL has **4 distinct inference methods**:
 | **matching_cot** | Chain-of-thought reasoning + rating | ✅ Yes | ❌ No (pure baseline) |
 | **description** | Definition-based matching (rating 0-10) | ✅ Yes | ✅ **Required** |
 | **embedding** | Direct encoder cosine similarity | ❌ No | ❌ No (no prompts) |
+| **text_augmentation** | Gemini-generated text → image matching | ❌ No | ❌ No (uses Gemini API) |
+| **caption** | VLM caption → Sentence-BERT similarity | ✅ Yes | ❌ No |
+| **image_generation** | Imagen-generated image → candidate matching | ❌ No | ❌ No (uses Imagen API) |
 
 **Key distinctions:**
 - **matching/matching_cot**: Pure baseline methods using only target_word + context (no definitions)
@@ -174,9 +369,12 @@ After running this, your `main.py` runs will instantly load cached definitions w
 
 ```bash
 # VLM: Try different inference methods (only for --model-type vlm)
-python main.py --model-type vlm --method matching_cot --language en  # Chain-of-thought reasoning (with definitions)
-python main.py --model-type vlm --method description --language en   # Description-based matching (with definitions)
-python main.py --model-type vlm --method embedding --language en     # Direct cosine similarity (no definitions)
+python main.py --model-type vlm --method matching_cot --language en      # Chain-of-thought reasoning (with definitions)
+python main.py --model-type vlm --method description --language en       # Description-based matching (with definitions)
+python main.py --model-type vlm --method embedding --language en         # Direct cosine similarity (no definitions)
+python main.py --model-type vlm --method text_augmentation --language en # Text enrichment with Gemini API
+python main.py --model-type vlm --method caption --language en           # Image-to-text with Sentence-BERT
+python main.py --model-type vlm --method image_generation --language en  # Synthetic image matching with Imagen
 
 # VLM: Adjust batch size (number of test instances in parallel)
 python main.py --model-type vlm --vlm-batch-size 5 --language en
@@ -295,9 +493,9 @@ Use qwen3-8b (default: bfloat16) or qwen3-14b with 4-bit quantization.
 - Fastest approach, most memory-efficient
 - **Performance:** ~66-70% Hit@1 (comparable to CLIP baseline)
 
-### Qwen3-VL Approach (VLM with 4 Methods)
+### Qwen3-VL Approach (VLM with 7 Methods)
 
-**Four distinct strategies** for ranking images (use `--method` parameter):
+**Seven distinct strategies** for ranking images (use `--method` parameter):
 
 #### 1. **matching** (default, pure baseline)
 - **What it does:** Prompts VLM to rate each image 0-10 using only target_word + context
@@ -348,6 +546,54 @@ python main.py --model-type vlm --method description --language en
 python main.py --model-type vlm --method embedding --language en
 ```
 
+#### 5. **text_augmentation** (Text Enrichment with Gemini)
+- **What it does:** Uses Gemini API to generate detailed, contextual descriptions from target_word + context, then matches augmented text with candidate images
+- **Process:** 
+  1. Gemini generates rich textual descriptions for word sense
+  2. Augmented text is encoded using text encoder
+  3. Candidate images encoded using vision encoder
+  4. Ranks by cosine similarity between augmented text and images
+- **Definitions:** ❌ Not used (generates descriptions instead)
+- **Speed:** Moderate (depends on Gemini API latency + encoding)
+- **Performance:** ~68-72% (text augmentation improves semantic representation)
+- **Best for:** Leveraging LLM's linguistic knowledge to enhance text representation
+
+```bash
+python main.py --model-type vlm --method text_augmentation --language en
+```
+
+#### 6. **caption** (Image-to-Text)
+- **What it does:** VLM generates text caption for each image, then compares captions with query using Sentence-BERT
+- **Process:**
+  1. Qwen3-VL generates caption for each candidate image
+  2. Sentence-BERT encodes query and all captions
+  3. Ranks by cosine similarity between query and caption embeddings
+- **Query format:** `"this is a photo of a {target_word}. {full_phrase}"`
+- **Definitions:** ❌ Not used
+- **Speed:** Moderate (VLM generation + Sentence-BERT encoding)
+- **Performance:** ~63-67% (tests if VLM understanding + semantic matching works)
+- **Best for:** Testing image-to-text pipeline effectiveness
+
+```bash
+python main.py --model-type vlm --method caption --language en
+```
+
+#### 7. **image_generation** (Synthetic Image Matching)
+- **What it does:** Generates reference images from text using Gemini Imagen API, then compares generated images with candidate images
+- **Process:**
+  1. Gemini Imagen generates reference image from target_word + context
+  2. Generated reference image encoded using vision encoder
+  3. Candidate images encoded using vision encoder
+  4. Ranks by cosine similarity between reference and candidate images
+- **Definitions:** ❌ Not used (generates images instead)
+- **Speed:** Slow (Imagen generation is expensive + encoding)
+- **Performance:** ~60-70% (tests if text-to-image generation captures visual semantics)
+- **Best for:** Exploring synthetic data augmentation, visual grounding of linguistic concepts
+
+```bash
+python main.py --model-type vlm --method image_generation --language en
+```
+
 **Summary Table:**
 
 | Method | Text Generation? | Uses Definitions? | Speed | Accuracy | Best Use Case |
@@ -356,6 +602,9 @@ python main.py --model-type vlm --method embedding --language en
 | **matching_cot** | Yes (reasoning) | ✅ Yes (auto) | ⚡ Moderate | 🎯 71-76% | Research, interpretability |
 | **description** | Yes (description) | ✅ Yes (auto) | 🐢 Slow | 📊 60-65% | Qualitative analysis |
 | **embedding** | No (pure retrieval) | ❌ No | ⚡⚡⚡ Fastest | 📊 65-70% | Efficiency, baselines |
+| **text_augmentation** | Yes (Gemini API) | ❌ No | ⚡⚡ Moderate | 📊 68-72% | Text enrichment experiments |
+| **caption** | Yes (VLM caption) | ❌ No | ⚡⚡ Moderate | 📊 63-67% | Image-to-text pipeline |
+| **image_generation** | No (Imagen API) | ❌ No | 🐢 Slow | 📊 60-70% | Synthetic image augmentation |
 
 ## Key Command-Line Options
 
@@ -371,9 +620,13 @@ python main.py [OPTIONS]
                siglip2-base-patch16-224, siglip2-large-patch16-512, etc.
 
 # VLM Options (only with --model-type vlm)
---vlm-model {qwen3-vl-2b,4b,8b}                        [default: qwen3-vl-8b]
---method {matching,matching_cot,description,embedding} [default: description]
---vlm-batch-size N                                     [default: 1, test instances in parallel]
+--vlm-model {qwen3-vl-2b,4b,8b}                                                    [default: qwen3-vl-8b]
+--method {matching,matching_cot,description,embedding,text_augmentation,caption,image_generation}  [default: description]
+--vlm-batch-size N                                                                 [default: 1, test instances in parallel]
+
+# API Options (for text_augmentation and image_generation methods)
+--gemini-api-key KEY                                   [required for text_augmentation and image_generation]
+--gemini-model MODEL_NAME                              [default: gemini-2.0-flash for text, imagen-3.0 for images]
 
 # Quantization (Qwen models only: VLM and definition models, NOT SigLIP2)
 --quantization {4bit,bfloat16}                         [default: bfloat16]
@@ -423,7 +676,11 @@ python main.py --model-type vlm --definition-model qwen3-14b --language en
 - **+5-8%** with Qwen3-8B definitions
 - **+7-10%** with Qwen3-14B definitions
 
+<a name="data-formats"></a>
+
 ## Data Formats
+
+### Input Data Structure
 
 **Test Data** (`{language}.test.data.v1.1.txt`):
 ```
@@ -440,9 +697,30 @@ correct_image.jpg
 img3.jpg[TAB]img7.jpg[TAB]img1.jpg[TAB]...
 ```
 
+### Cache Format (Sense Definitions)
+
+**Location**: `results/sense_definitions/`
+
+**Format** (sorted hashmap, human-readable JSON):
+```json
+{
+  "bank_a1b2c3": {
+    "target_word": "bank",
+    "full_phrase": "river bank",
+    "definition": "Sloped land beside a river",
+    "model": "qwen3-14b",
+    "timestamp": "2025-11-15T..."
+  }
+}
+```
+
+<a name="troubleshooting"></a>
+
 ## Troubleshooting
 
-**CUDA Out of Memory**:
+### CUDA Out of Memory
+
+**For SigLIP2**:
 ```bash
 # SigLIP2: Use smaller model (SigLIP2 does NOT support quantization)
 python main.py --model-type siglip2 --siglip2-model siglip2-base-patch16-224 --language en  # 4GB VRAM
@@ -461,17 +739,95 @@ python main.py --model-type vlm --vlm-batch-size 1 --language en
 # Memory usage is determined by model size, batch size, and inference method
 ```
 
-**Model Download Issues**:
+**VRAM Configuration Examples**:
+
+```bash
+# Conservative (16GB VRAM)
+python main.py --model-type vlm --definition-model qwen3-8b --quantization 4bit --language en
+# Stage 1: Qwen3-8B (4-bit): ~5 GB → unload → 0 GB
+# Stage 2: Qwen3-VL-8B (bfloat16): ~16 GB
+# Peak: 16 GB ✓
+
+# Balanced Quality (24GB VRAM)
+python main.py --model-type vlm --definition-model qwen3-14b --quantization 4bit --language en
+# Stage 1: Qwen3-14B (4-bit): ~9 GB → unload → 0 GB
+# Stage 2: Qwen3-VL-8B (bfloat16): ~16 GB
+# Peak: 16 GB ✓
+
+# High Quality (32GB VRAM)
+python main.py --model-type vlm --definition-model qwen3-8b --language en
+# Stage 1: Qwen3-8B (bfloat16): ~16 GB → unload → 0 GB
+# Stage 2: Qwen3-VL-8B (bfloat16): ~16 GB
+# Peak: 16 GB ✓
+
+# Maximum Quality (48GB+ VRAM)
+python main.py --model-type vlm --definition-model qwen3-14b --language en
+# Stage 1: Qwen3-14B (bfloat16): ~28 GB → unload → 0 GB
+# Stage 2: Qwen3-VL-8B (bfloat16): ~16 GB
+# Peak: 28 GB ✓
+```
+
+### Model Download Issues
 - Models auto-download from HuggingFace on first use (2-32GB)
 - Requires internet connection
 - Optional: Set cache location with `export HF_HOME=/path/to/cache`
 
-**Flash Attention Fails**:
+### Flash Attention Failures
 - Flash Attention is optional but recommended for speed
 - Requires CUDA toolkit and compatible GPU
 - Model works without it if installation fails
 
+### Common Commands for Testing
+
+```bash
+# Test SigLIP2 loader
+python -c "from src.siglip2_loader import load_model; print('SigLIP2 loader OK')"
+
+# Test Qwen3-VL loader
+python -c "from src.qwen_vlm_loader import load_model; print('Qwen3-VL loader OK')"
+
+# Test Qwen3 text model loader
+python -c "from src.qwen3_loader import load_qwen3_model; print('Qwen3 loader OK')"
+
+# Test definition generator with cache
+python src/qwen3_inference.py --language en --model qwen3-8b --test-mode
+
+# Test data loader
+python src/data_loader.py
+```
+
+<a name="dataset"></a>
+
+## Dataset
+
+### Access
+
+The complete dataset can be accessed via:
+
+🔗 [Google Drive - VWSD Dataset](https://drive.google.com/file/d/1KLux4KlOdoOGmoETyu-Qc-rShnnUbGWi/view?usp=sharing)
+
+### Contents
+
+The dataset includes:
+- **Multilingual test data**: English, Persian (Farsi), Italian
+- **Training data with augmentation**: Text-augmented versions
+- **Target words/phrases**: With corresponding visual image sets (10 candidates per instance)
+- **Gold labels**: Correct image annotations for evaluation
+
+### Data Structure
+
+```
+data/
+├── test_data/
+│   ├── en.test.data.v1.1.txt    # Tab-separated: target_word, context, img1, ..., img10
+│   └── en.test.gold.v1.1.txt    # One gold image per line
+└── test_images/
+    └── test_images_resized/      # Actual image files
+```
+
 ---
+
+<a name="summary"></a>
 
 ## Summary: Quick Decision Guide
 
@@ -757,4 +1113,28 @@ python main.py --model-type hybrid --stage1 siglip2 --stage2 vlm --rerank-topk 5
 
 ---
 
-**Key Dependencies**: PyTorch 2.8.0+, transformers 4.57.0+, qwen-vl-utils, accelerate, bitsandbytes, ranx (see `requirements.txt` for full list)
+<a name="authors"></a>
+
+## Authors
+
+| Name | GitHub Profile |
+|------|----------------|
+| Rui Zhou | [![GitHub followers](https://img.shields.io/github/followers/RuiZhou-cn?label=Follow&style=social)](https://github.com/RuiZhou-cn) |
+| Jiawei Pei | [![GitHub followers](https://img.shields.io/github/followers/JaveyBae?label=Follow&style=social)](https://github.com/JaveyBae) |
+| Nilaksan Sandrakumar | [![GitHub followers](https://img.shields.io/github/followers/nilaksan97?label=Follow&style=social)](https://github.com/nilaksan97) |
+
+<a name="license"></a>
+
+## License
+
+This project is for academic research purposes. Please cite appropriately if you use this work in your research.
+
+---
+
+<p align="center">
+  <i>Built with ❤️ for advancing multimodal AI research</i>
+</p>
+
+---
+
+**Key Dependencies**: PyTorch 2.8.0+, transformers 4.57.0+, qwen-vl-utils, accelerate, bitsandbytes, ranx, google-generativeai (see `requirements.txt` for full list)
