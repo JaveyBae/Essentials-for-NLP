@@ -9,6 +9,7 @@ numpy>=1.24.0
 transformers>=4.57.0      # SigLIP2 + Qwen3-VL models
 accelerate>=0.33.0        # Model loading and device management
 bitsandbytes>=0.44.0      # 4-bit/8-bit quantization support
+peft>=0.11.0              # LoRA fine-tuning
 qwen-vl-utils==0.0.14     # Qwen3-VL specific utilities
 sentencepiece>=0.1.99     # Qwen3 tokenizer
 protobuf>=3.20.0          # Tokenizer dependencies
@@ -31,3 +32,4 @@ sentence-transformers>=2.2.0
 # Additional utilities
 tqdm>=4.65.0
 scipy>=1.10.0
+matplotlib>=3.7.0         # Training curves visualization

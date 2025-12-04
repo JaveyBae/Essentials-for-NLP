@@ -178,21 +178,55 @@ pip install -r requirements.txt
 pip install -U flash-attn --no-build-isolation
 ```
 
-## Data Structure
+## Project Structure
 
 ```
-data/
-├── test_data/
-│   ├── en.test.data.v1.1.txt    # Tab-separated: target_word, context, img1, ..., img10
-│   └── en.test.gold.v1.1.txt    # One gold image per line
-└── test_images/
-    └── test_images_resized/      # Actual image files
-
-results/
-└── sense_definitions/            # Definition cache (auto-generated for VLM)
-    ├── en_qwen3-14b.json        # Cached definitions for English (sorted, human-readable JSON)
-    ├── fa_qwen3-14b.json        # Cached definitions for Farsi
-    └── it_qwen3-14b.json        # Cached definitions for Italian
+├── src/                           # Core inference modules
+│   ├── siglip2_loader.py         # SigLIP2 model loading
+│   ├── siglip2_inference.py      # SigLIP2 ranking
+│   ├── qwen_vlm_loader.py        # Qwen3-VL model loading
+│   ├── qwen_vlm_inference.py     # Qwen3-VL inference (5 methods)
+│   ├── qwen3_loader.py           # Qwen3 text model loading
+│   ├── qwen3_inference.py        # Definition generation
+│   ├── cascade_reranker.py       # Two-stage pipeline
+│   └── data_loader.py            # Data loading utilities
+├── finetune/                      # LoRA fine-tuning
+│   ├── train_siglip2_lora.py     # Main training script
+│   ├── train_siglip2.py          # Standard training
+│   ├── generate_augmentations.py # VLM text augmentation
+│   ├── vwsd_dataset.py           # Base dataset
+│   ├── vwsd_augmented_dataset.py # Augmented dataset
+│   └── checkpoints/              # Saved models
+├── eval/                          # Evaluation
+│   └── vwsd_ranking_metric.py    # MRR, Hit@1 metrics
+├── scripts/                       # Utility scripts
+│   ├── shell/                    # Shell scripts (experiments)
+│   ├── augment_clip_data.py      # CLIP augmentation
+│   ├── example_image_similarity.py
+│   └── image_generate_basedonphrase.py
+├── notebooks/                     # Jupyter notebooks
+│   ├── clip_script.ipynb         # CLIP experiments
+│   ├── Text_Augmentation.ipynb   # Text augmentation
+│   └── laion_CLIP_*.ipynb        # LAION-CLIP experiments
+├── data/                          # Datasets
+│   ├── test_data/                # Test splits (en/fa/it)
+│   │   ├── en.test.data.v1.1.txt # Tab-separated: target_word, context, img1..img10
+│   │   └── en.test.gold.v1.1.txt # One gold image per line
+│   ├── train_data/               # Training data
+│   │   └── train.data.v1.augmented.txt
+│   ├── test_images/              # Image files
+│   └── semeval-2023-task-1-V-WSD-train-v1/
+├── results/                       # Outputs
+│   ├── predictions/              # Model predictions
+│   ├── metrics/                  # Evaluation results (JSONL)
+│   ├── sense_definitions/        # Definition cache
+│   └── text_augmentations/       # Augmentation cache
+├── report/                        # LaTeX report
+│   └── latex/                    # ACL templates
+├── main.py                        # Entry point
+├── requirements.txt               # Dependencies
+├── README.md                      # Project overview
+└── CLAUDE.md                      # This file
 ```
 
 **Cache format** (sorted hashmap, directly human-readable):
@@ -271,10 +305,10 @@ The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL ba
 
 ### Memory Management
 
-- GPU memory stats printed after VLM model loading (`models/vlm_model_loader.py:162-165`)
+- GPU memory stats printed after VLM model loading (`src/qwen_vlm_loader.py`)
 - Definition generator automatically cleaned up via context manager to free GPU before VLM loading
-- Explicit cache clearing after processing each instance batch (`src/inference.py:263-265`)
-- Context manager support for automatic VLM cleanup (`models/vlm_model_loader.py:209-217`)
+- Explicit cache clearing after processing each instance batch
+- Context manager support for automatic VLM cleanup (`src/qwen_vlm_loader.py`)
 
 ### Inference Method Comparison
 

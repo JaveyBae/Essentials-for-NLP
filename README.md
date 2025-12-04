@@ -37,21 +37,113 @@ This project implements **Visual Word Sense Disambiguation (VWSD)** using multim
 conda create -n vwsd python=3.10 -y && conda activate vwsd
 pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
+```
 
-# Run inference
-python main.py --model-type siglip2 --language en           # Fast baseline
-python main.py --model-type vlm --method matching --language en  # VLM
-python main.py --cascade --topk 3 --language en             # Cascade
+## Usage
+
+### SigLIP2 Inference (Fast Embedding-Based)
+
+```bash
+# Default model (so400m, ~72% Hit@1)
+python main.py --model-type siglip2 --language en
+
+# Different model variants
+python main.py --model-type siglip2 --siglip2-model siglip2-base-patch16-224 --language en      # Fastest, 4GB
+python main.py --model-type siglip2 --siglip2-model siglip2-so400m-patch14-384 --language en    # Best balance
+python main.py --model-type siglip2 --siglip2-model siglip2-giant-opt-patch16-384 --language en # Best quality, 16GB
+
+# Use fine-tuned model
+python main.py --model-type siglip2 --siglip2-finetuned finetune/checkpoints/<your-checkpoint>/best_model --language en
+
+# Other languages
+python main.py --model-type siglip2 --language fa  # Farsi
+python main.py --model-type siglip2 --language it  # Italian
+```
+
+### Qwen3-VL Inference (5 Methods)
+
+```bash
+# Method 1: matching - Direct 0-10 rating (baseline)
+python main.py --model-type vlm --method matching --language en
+
+# Method 2: matching_cot - Chain-of-thought reasoning + rating
+python main.py --model-type vlm --method matching_cot --language en
+
+# Method 3: description - Definition-based matching (uses Qwen3 text model)
+python main.py --model-type vlm --method description --language en
+
+# Method 4: caption - VLM generates caption, Sentence-BERT computes similarity
+python main.py --model-type vlm --method caption --language en
+
+# Method 5: embedding - Direct cosine similarity (fastest VLM method)
+python main.py --model-type vlm --method embedding --language en
+
+# Use smaller model for limited VRAM
+python main.py --model-type vlm --method matching --vlm-model qwen3-vl-4b --language en
+
+# Enable 4-bit quantization (16GB VRAM)
+python main.py --model-type vlm --method matching --quantization 4bit --language en
+```
+
+### Cascade Reranking (Best Performance)
+
+```bash
+# SigLIP2 ranks all 10, VLM reranks top-3 with CoT (~77% Hit@1)
+python main.py --cascade --topk 3 --reranker-method matching_cot --language en
+
+# Top-5 reranking (more accurate, slower)
+python main.py --cascade --topk 5 --reranker-method matching_cot --language en
+
+# Simple matching reranker (faster)
+python main.py --cascade --topk 3 --reranker-method matching --language en
+
+# Custom models
+python main.py --cascade --topk 3 --siglip2-model siglip2-giant-opt-patch16-384 --vlm-model qwen3-vl-4b --language en
+```
+
+### Fine-tuning SigLIP2
+
+```bash
+# Basic LoRA fine-tuning
+python finetune/train_siglip2_lora.py --epochs 10 --batch-size 32
+
+# With text augmentation (reduces overfitting)
+python finetune/train_siglip2_lora.py \
+    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
+    --aug-prob 0.5 \
+    --aug-types caption definition \
+    --epochs 10
+
+# Generate augmentations first (one-time, ~4 hours)
+python finetune/generate_augmentations.py --type all
+```
+
+### Evaluation
+
+```bash
+# Evaluate predictions
+python eval/vwsd_ranking_metric.py \
+    -p results/predictions/<model-name> \
+    -d data/test_data \
+    -l en \
+    -o results/metrics/my_results.jsonl
+
+# Evaluate multiple languages
+python eval/vwsd_ranking_metric.py \
+    -p results/predictions/<model-name> \
+    -l en fa it \
+    -o results/metrics/all_languages.jsonl
 ```
 
 ## Approaches
 
 ### SigLIP2 (Embedding-Based)
+
 - Direct text-image cosine similarity
 - **Performance**: ~72% Hit@1
 - **VRAM**: 4-16GB depending on model variant
 
-### Qwen3-VL (7 Inference Methods)
+### Qwen3-VL (5 Inference Methods)
 
 | Method | Description | Uses Definitions |
 |--------|-------------|------------------|
@@ -60,10 +152,9 @@ python main.py --cascade --topk 3 --language en             # Cascade
 | `description` | Definition-based matching | Yes |
 | `embedding` | Direct cosine similarity | No |
 | `caption` | VLM caption + Sentence-BERT | No |
-| `text_augmentation` | Gemini text enrichment | No |
-| `image_generation` | Imagen synthetic images | No |
 
 ### Cascade Reranking
+
 - **Stage 1**: SigLIP2 ranks all 10 candidates (fast)
 - **Stage 2**: VLM reranks top-K only (accurate)
 
@@ -85,15 +176,31 @@ python main.py --cascade --topk 3 --language en             # Cascade
 ## Project Structure
 
 ```
-├── src/                    # Core modules
+├── src/                    # Core inference modules
 │   ├── siglip2_*.py       # SigLIP2 loader/inference
 │   ├── qwen_vlm_*.py      # Qwen3-VL loader/inference
-│   └── cascade_reranker.py
-├── eval/                   # Evaluation metrics
+│   ├── qwen3_*.py         # Qwen3 text model (definitions)
+│   ├── cascade_reranker.py
+│   └── data_loader.py     # Data loading utilities
 ├── finetune/              # LoRA fine-tuning
-├── data/                   # Test data and images
-├── report/                 # LaTeX report
-└── main.py                # Entry point
+│   ├── train_siglip2_lora.py
+│   ├── generate_augmentations.py
+│   └── vwsd_*_dataset.py
+├── eval/                   # Evaluation metrics
+├── scripts/               # Utility scripts
+│   ├── shell/             # Shell scripts
+│   └── *.py               # Python utilities
+├── notebooks/             # Jupyter notebooks
+├── data/                  # Datasets
+│   ├── test_data/         # Test splits (en/fa/it)
+│   ├── train_data/        # Training data
+│   └── test_images/       # Image files
+├── results/               # Outputs
+│   ├── predictions/       # Model predictions
+│   ├── metrics/           # Evaluation results
+│   └── text_augmentations/
+├── report/                # LaTeX report
+└── main.py               # Entry point
 ```
 
 ## Dataset

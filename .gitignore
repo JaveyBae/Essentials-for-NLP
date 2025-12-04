@@ -149,19 +149,41 @@ cython_debug/
 .DS_Store
 Thumbs.db
 
-# Project-specific
+# Project-specific - Large data files
 data/
-results/
+!data/test_data/
+!data/train_data/
+data/test_data/*.gold.*
+data/semeval-2023-task-1-V-WSD-train-v1/
+data/semeval-2023-task-1-V-WSD-train-v1.zip
+data/image_generatedbyGemini/
+data/image_generatedbyGemini.zip
+data/test_images/
+data/sense_definitions/
+
+# Results - Keep metrics, ignore large files
+results/predictions/
+results/sense_definitions/
+results/text_augmentations/
+!results/metrics/
 !results/rank_metrics.jsonl
 
 # Fine-tuning checkpoints and results
 finetune/checkpoints/
 finetune/__pycache__/
 
-# ACL paper LaTeX output
-ACL/latex/*.aux
-ACL/latex/*.bbl
-ACL/latex/*.blg
-ACL/latex/*.out
-ACL/latex/*.pdf
-ACL/latex/*.synctex.gz
+# Report LaTeX output
+report/latex/*.aux
+report/latex/*.bbl
+report/latex/*.blg
+report/latex/*.out
+report/latex/*.pdf
+report/latex/*.synctex.gz
+report/latex/*.fdb_latexmk
+report/latex/*.fls
+report/latex/*.log
+
+# Old directories (removed, but ignore if leftover)
+Dataset/
+Results/
+Scripts/
