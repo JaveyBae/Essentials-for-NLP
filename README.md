@@ -69,12 +69,18 @@ python main.py --cascade --topk 3 --language en             # Cascade
 
 ## Results
 
-| Method | Hit@1 | MRR@10 |
-|--------|-------|--------|
-| **SigLIP2-SO400M** | **72.79%** | 0.8276 |
-| SigLIP2-Giant | 72.35% | 0.8271 |
-| Qwen3-VL matching_cot | 65.44% | 0.7798 |
-| CLIP Baseline | 66.8% | - |
+| Method | Hit@1 | MRR | NDCG@10 |
+|--------|-------|-----|---------|
+| **Cascade (SigLIP2 + VLM Rerank)** | **77.32%** | 85.75 | 89.24 |
+| CLIP LoRA Fine-tuned | 75.59% | 84.82 | -- |
+| SigLIP2 so400m | 72.79% | 82.76 | 87.00 |
+| SigLIP2 Base | 68.03% | 79.81 | 84.77 |
+| Qwen3-VL + CoT | 65.44% | 77.98 | 83.36 |
+| Qwen3-VL + Sense Def | 63.07% | 74.89 | 80.88 |
+| Qwen3-VL Direct Matching | 61.77% | 75.93 | 81.83 |
+| CLIP Baseline | 61.34% | 74.66 | 80.83 |
+| Caption → SBERT | 48.60% | 65.10 | 73.52 |
+| Qwen3-VL Embedding | 9.07% | 29.31 | 45.51 |
 
 ## Project Structure
 
