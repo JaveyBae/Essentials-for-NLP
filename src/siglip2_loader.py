@@ -1,8 +1,11 @@
 """
 SigLIP2 Model Loader.
 Centralized loading for SigLIP2 vision-language models.
+Supports both HuggingFace models and PEFT LoRA adapters.
 """
 
+import os
+import json
 import torch
 from transformers import AutoModel, AutoProcessor
 from typing import Optional, Tuple
@@ -42,7 +45,8 @@ def load_siglip2_model(
     quantization: Optional[str] = None,
     device: str = "cuda",
     cache_dir: Optional[str] = None,
-    use_flash_attention: bool = True
+    use_flash_attention: bool = True,
+    local_model_path: Optional[str] = None,
 ) -> Tuple[AutoModel, AutoProcessor]:
     """
     Load SigLIP2 model and processor.
@@ -53,15 +57,41 @@ def load_siglip2_model(
         device: Device to run on ("cuda" or "cpu")
         cache_dir: Optional directory for model cache
         use_flash_attention: Use Flash Attention 2 for memory efficiency (default: True)
+        local_model_path: Path to fine-tuned model directory (overrides model_name)
 
     Returns:
         Tuple of (model, processor)
     """
-    if model_name not in SUPPORTED_MODELS:
+    # Check if loading from local fine-tuned model
+    is_peft_adapter = False
+    base_model_id = None
+    model_id = None
+
+    if local_model_path is not None:
+        if os.path.isdir(local_model_path):
+            # Check if this is a PEFT adapter (has adapter_config.json)
+            adapter_config_path = os.path.join(local_model_path, "adapter_config.json")
+            if os.path.exists(adapter_config_path):
+                is_peft_adapter = True
+                with open(adapter_config_path) as f:
+                    adapter_config = json.load(f)
+                base_model_id = adapter_config.get("base_model_name_or_path")
+                model_id = base_model_id  # Use base model for config checks
+                logger.info(f"Loading PEFT LoRA adapter from: {local_model_path}")
+                logger.info(f"  Base model: {base_model_id}")
+            else:
+                # Merged model - load directly
+                logger.info(f"Loading fine-tuned SigLIP2 from: {local_model_path}")
+                model_id = local_model_path
+        else:
+            raise ValueError(f"Local model path not found: {local_model_path}")
+    elif model_name not in SUPPORTED_MODELS:
         raise ValueError(
             f"Unsupported model: {model_name}. "
             f"Choose from: {list(SUPPORTED_MODELS.keys())}"
         )
+    else:
+        model_id = SUPPORTED_MODELS[model_name]
 
     if quantization is not None:
         raise ValueError(
@@ -69,8 +99,6 @@ def load_siglip2_model(
             f"BitsAndBytes causes dtype mismatches in attention layers. "
             f"Use F32 (base/large models) or float16 (so400m/giant-opt models) only."
         )
-
-    model_id = SUPPORTED_MODELS[model_name]
 
     # Configure model loading
     load_kwargs = {
@@ -83,7 +111,11 @@ def load_siglip2_model(
     # Configure attention implementation
     # Base and Large models have issues with Flash Attention/SDPA - use eager attention (F32)
     # So400m and Giant-opt models work fine with optimized attention (float16)
-    if "base" in model_name or "large" in model_name:
+    # For fine-tuned models, infer from the model_id path
+    # Skip for PEFT adapters - we configure attention when loading base model
+    if is_peft_adapter:
+        pass  # Will configure when loading base model
+    elif "base" in str(model_id) or "large" in str(model_id):
         load_kwargs["attn_implementation"] = "eager"
         # Use F32 (default) for base/large models as per model card specs
         logger.info(f"Loading SigLIP2: {model_name} (F32 with eager attention)")
@@ -103,17 +135,40 @@ def load_siglip2_model(
         load_kwargs["dtype"] = torch.float16  # Use float16 with SDPA per official examples
         logger.info(f"Loading SigLIP2: {model_name} (float16 with SDPA)")
 
-    # Load processor (tokenizer + image processor)
-    processor = AutoProcessor.from_pretrained(
-        model_id,
-        cache_dir=cache_dir
-    )
+    # Load processor and model
+    if is_peft_adapter:
+        # Load base model first, then apply PEFT adapter
+        from peft import PeftModel
 
-    # Load model
-    model = AutoModel.from_pretrained(model_id, **load_kwargs)
+        processor = AutoProcessor.from_pretrained(
+            base_model_id,
+            cache_dir=cache_dir
+        )
+
+        # For PEFT, determine load kwargs based on base model type
+        if "base" in base_model_id or "large" in base_model_id:
+            load_kwargs["attn_implementation"] = "eager"
+            logger.info(f"Loading base model: {base_model_id} (F32 with eager attention)")
+        else:
+            load_kwargs["attn_implementation"] = "sdpa"
+            load_kwargs["dtype"] = torch.float16
+            logger.info(f"Loading base model: {base_model_id} (float16 with SDPA)")
+
+        base_model = AutoModel.from_pretrained(base_model_id, **load_kwargs)
+        model = PeftModel.from_pretrained(base_model, local_model_path)
+        logger.info(f"✓ PEFT adapter loaded from: {local_model_path}")
+    else:
+        # Standard loading (HuggingFace model or merged model)
+        processor = AutoProcessor.from_pretrained(
+            model_id,
+            cache_dir=cache_dir
+        )
+        model = AutoModel.from_pretrained(model_id, **load_kwargs)
+
     model.eval()
 
-    logger.info(f"✓ SigLIP2 model loaded: {model_name}")
+    model_desc = local_model_path if local_model_path else model_name
+    logger.info(f"✓ SigLIP2 model loaded: {model_desc}")
 
     # Print memory usage if CUDA
     if torch.cuda.is_available():

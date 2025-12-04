@@ -87,13 +87,17 @@ def run_inference_siglip2(args, data_loader, instances):
         logger.info(f"[Stage 1/2] Skipping definition generation (use --use-definitions to enable)")
 
     # Stage 2: Load SigLIP2 model and run inference
-    logger.info(f"[Stage 2/2] Loading SigLIP2 model...")
+    if args.siglip2_finetuned:
+        logger.info(f"[Stage 2/2] Loading fine-tuned SigLIP2 model from {args.siglip2_finetuned}...")
+    else:
+        logger.info(f"[Stage 2/2] Loading SigLIP2 model...")
 
     # SigLIP2 always uses F32 or float16 (no quantization support)
     model, processor = load_siglip2_model(
         model_name=args.siglip2_model,
         quantization=None,  # SigLIP2 doesn't support quantization
-        device="cuda"
+        device="cuda",
+        local_model_path=args.siglip2_finetuned,
     )
 
     # Initialize inference engine
@@ -359,16 +363,23 @@ def run_inference(args):
             f"cascade_{args.siglip2_model}_{args.vlm_model}_{args.reranker_method}_top{args.topk}"
         )
     elif args.model_type == "siglip2":
-        # SigLIP2: model_name + optional definition info
+        # SigLIP2: model_name + optional definition info + optional finetuned indicator
+        if args.siglip2_finetuned:
+            # Extract model name from path (e.g., "best_model" from ".../best_model/")
+            model_dir_name = os.path.basename(args.siglip2_finetuned.rstrip('/'))
+            siglip2_name = f"siglip2_finetuned_{model_dir_name}"
+        else:
+            siglip2_name = args.siglip2_model
+
         if args.use_definitions:
             output_dir = os.path.join(
                 args.output_dir,
-                f"{args.siglip2_model}_def-{args.definition_model}_{args.prompt_template}"
+                f"{siglip2_name}_def-{args.definition_model}_{args.prompt_template}"
             )
         else:
             output_dir = os.path.join(
                 args.output_dir,
-                args.siglip2_model
+                siglip2_name
             )
     else:  # vlm
         # VLM output directory naming:
@@ -496,6 +507,13 @@ def main():
     )
 
     parser.add_argument(
+        "--siglip2-finetuned",
+        type=str,
+        default=None,
+        help="Path to fine-tuned SigLIP2 model directory (overrides --siglip2-model)"
+    )
+
+    parser.add_argument(
         "--use-definitions",
         action="store_true",
         help="Use sense definitions in SigLIP2 prompts. Definitions are generated/loaded from cache using --definition-model."
@@ -614,11 +632,17 @@ def main():
     elif args.model_type == "siglip2":
         # Determine dtype based on model variant
         dtype_str = "F32" if "base" in args.siglip2_model or "large" in args.siglip2_model else "float16"
-        config_parts = [
-            f"Model: SigLIP2 ({args.siglip2_model})",
-            f"Dtype: {dtype_str}",  # SigLIP2 uses F32 or float16, no quantization
-            f"Language: {args.language}"
-        ]
+        if args.siglip2_finetuned:
+            config_parts = [
+                f"Model: SigLIP2 (fine-tuned from {args.siglip2_finetuned})",
+                f"Language: {args.language}"
+            ]
+        else:
+            config_parts = [
+                f"Model: SigLIP2 ({args.siglip2_model})",
+                f"Dtype: {dtype_str}",  # SigLIP2 uses F32 or float16, no quantization
+                f"Language: {args.language}"
+            ]
         if args.use_definitions:
             config_parts.append(f"Definitions: {args.definition_model}")
             config_parts.append(f"Template: {args.prompt_template}")

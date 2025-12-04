@@ -319,6 +319,80 @@ The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL ba
 - Uses text query format: `"this is a photo of a {target_word}. {full_phrase}"`
 - Best for: Testing if VLM understanding + semantic text matching outperforms direct scoring
 
+## Fine-tuning with Text Augmentation
+
+SigLIP2 fine-tuning on 12,869 training instances can lead to overfitting. Use VLM-based text augmentation to increase effective dataset size.
+
+### Text Augmentation Pipeline
+
+**Step 1: Generate augmentations (run once, ~4 hours)**:
+```bash
+# Generate all augmentation types
+python finetune/generate_augmentations.py --type all
+
+# Or generate individually
+python finetune/generate_augmentations.py --type caption --model qwen3-vl-8b
+python finetune/generate_augmentations.py --type definition --model qwen3-8b
+python finetune/generate_augmentations.py --type paraphrase --model qwen3-8b --num-variants 3
+
+# Resume from checkpoint
+python finetune/generate_augmentations.py --type caption --resume
+
+# Test with limited instances
+python finetune/generate_augmentations.py --type all --limit 100
+```
+
+**Step 2: Train with augmentation**:
+```bash
+# Train with VLM-augmented data (50% augmented, 50% original)
+python finetune/train_siglip2_lora.py \
+    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
+    --aug-prob 0.5 \
+    --aug-types caption definition \
+    --val-split 0.05 \
+    --epochs 10
+
+# Higher augmentation probability (more diverse training)
+python finetune/train_siglip2_lora.py \
+    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
+    --aug-prob 0.7 \
+    --aug-types caption definition paraphrase \
+    --epochs 10
+```
+
+### Augmentation Types
+
+| Type | Model | Description |
+|------|-------|-------------|
+| **caption** | Qwen3-VL-8B | VLM generates description of gold image |
+| **definition** | Qwen3-8B | Generate visual definition for word sense |
+| **paraphrase** | Qwen3-8B | Paraphrase context phrase (3 variants) |
+
+### Augmentation Cache Format
+
+Cached at `results/text_augmentations/train_en_augmentations_index.json` (English only):
+```json
+{
+  "bank_a1b2c3": {
+    "target_word": "bank",
+    "full_phrase": "river bank",
+    "gold_image": "image.123.jpg",
+    "augmentations": {
+      "caption": "A sloped riverbank with green grass...",
+      "definition": "Sloped land beside a river",
+      "paraphrase": ["stream bank", "creek bank edge"]
+    }
+  }
+}
+```
+
+### Fine-tuning Files
+
+- `finetune/generate_augmentations.py`: Pre-generate text augmentations using VLMs
+- `finetune/vwsd_augmented_dataset.py`: Dataset with augmentation support
+- `finetune/vwsd_dataset.py`: Base contrastive dataset
+- `finetune/train_siglip2_lora.py`: LoRA fine-tuning with augmentation CLI args
+
 ## Performance Baselines
 
 - **CLIP Baseline**: ~66.8% Hit@1

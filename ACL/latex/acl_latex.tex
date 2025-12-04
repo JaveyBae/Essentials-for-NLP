@@ -1,0 +1,346 @@
+\documentclass[11pt]{article}
+
+% Change "review" to "final" to generate the final (sometimes called camera-ready) version.
+% Change to "preprint" to generate a non-anonymous version with page numbers.
+\usepackage[preprint]{acl}
+
+% Standard package includes
+\usepackage{times}
+\usepackage{latexsym}
+
+% For proper rendering and hyphenation of words containing Latin characters (including in bib files)
+\usepackage[T1]{fontenc}
+% For Vietnamese characters
+% \usepackage[T5]{fontenc}
+% See https://www.latex-project.org/help/documentation/encguide.pdf for other character sets
+
+% This assumes your files are encoded as UTF8
+\usepackage[utf8]{inputenc}
+
+% This is not strictly necessary, and may be commented out,
+% but it will improve the layout of the manuscript,
+% and will typically save some space.
+\usepackage{microtype}
+\usepackage{booktabs} 
+\usepackage{multirow} 
+% This is also not strictly necessary, and may be commented out.
+% However, it will improve the aesthetics of text in
+% the typewriter font.
+\usepackage{inconsolata}
+
+%Including images in your LaTeX document requires adding
+%additional package(s)
+\usepackage{graphicx}
+\usepackage{amsmath} 
+\usepackage{amsfonts}
+
+% If the title and author information does not fit in the area allocated, uncomment the following
+%
+%\setlength\titlebox{<dim>}
+%
+% and set <dim> to something 5cm or larger.
+
+\title{SemEval 2023 Task 1: Visual Word Sense Disambiguation}
+
+% Author information can be set in various styles:
+% For several authors from the same institution:
+% \author{Rui Zhou \and Jiawei Pei \and Author n \\
+%         Address line \\ ... \\ Address line}
+% if the names do not fit well on one line use
+%         Author 1 \\ {\bf Author 2} \\ ... \\ {\bf Author n} \\
+% For authors from different institutions:
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \And  ... \And
+%         Author n \\ Address line \\ ... \\ Address line}
+% To start a separate ``row'' of authors use \AND, as in
+% \author{Author 1 \\ Address line \\  ... \\ Address line
+%         \AND
+%         Author 2 \\ Address line \\ ... \\ Address line \And
+%         Author 3 \\ Address line \\ ... \\ Address line}
+
+\author{Rui Zhou \\
+  University of Zurich\\
+  % Affiliation / Address line 2 \\
+  % Affiliation / Address line 3 \\
+  \texttt{rui.zhou2@uzh.ch} \\\And
+  Jiawei Pei \\
+  University of Zurich\\
+  % Affiliation / Address line 2 \\
+  % Affiliation / Address line 3 \\
+  \texttt{email@domain} \\\And
+  Nilaksan Selliah \\
+  University of Zurich\\
+  % Affiliation / Address line 2 \\
+  % Affiliation / Address line 3 \\
+  \texttt{email@domain} \\} 
+
+%\author{
+%  \textbf{First Author\textsuperscript{1}},
+%  \textbf{Second Author\textsuperscript{1,2}},
+%  \textbf{Third T. Author\textsuperscript{1}},
+%  \textbf{Fourth Author\textsuperscript{1}},
+%\\
+%  \textbf{Fifth Author\textsuperscript{1,2}},
+%  \textbf{Sixth Author\textsuperscript{1}},
+%  \textbf{Seventh Author\textsuperscript{1}},
+%  \textbf{Eighth Author \textsuperscript{1,2,3,4}},
+%\\
+%  \textbf{Ninth Author\textsuperscript{1}},
+%  \textbf{Tenth Author\textsuperscript{1}},
+%  \textbf{Eleventh E. Author\textsuperscript{1,2,3,4,5}},
+%  \textbf{Twelfth Author\textsuperscript{1}},
+%\\
+%  \textbf{Thirteenth Author\textsuperscript{3}},
+%  \textbf{Fourteenth F. Author\textsuperscript{2,4}},
+%  \textbf{Fifteenth Author\textsuperscript{1}},
+%  \textbf{Sixteenth Author\textsuperscript{1}},
+%\\
+%  \textbf{Seventeenth S. Author\textsuperscript{4,5}},
+%  \textbf{Eighteenth Author\textsuperscript{3,4}},
+%  \textbf{Nineteenth N. Author\textsuperscript{2,5}},
+%  \textbf{Twentieth Author\textsuperscript{1}}
+%\\
+%\\
+%  \textsuperscript{1}Affiliation 1,
+%  \textsuperscript{2}Affiliation 2,
+%  \textsuperscript{3}Affiliation 3,
+%  \textsuperscript{4}Affiliation 4,
+%  \textsuperscript{5}Affiliation 5
+%\\
+%  \small{
+%    \textbf{Correspondence:} \href{mailto:email@domain}{email@domain}
+%  }
+%}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+Visual Word Sense Disambiguation (VWSD) is a challenging multimodal task that requires identifying the correct visual representation of an ambiguous word given a limited textual context. This paper presents our participation and experimental analysis based on the SemEval-2023 Task 1 framework. We investigate two distinct distinct approaches: a discriminative embedding-based method using SigLIP2 and a generative reasoning method using the Large Vision-Language Model Qwen3-VL. While the CLIP baseline achieves only 37.19\% accuracy, our SigLIP2 approach significantly improves performance to 72.79\% Hit@1. Furthermore, we explore the reasoning capabilities of Qwen3-VL, finding that while explicit Chain-of-Thought prompting improves generative performance (65.44\%), discriminative approaches currently yield superior ranking results for this specific retrieval task.
+\end{abstract}
+
+\section{Introduction}
+Polysemy—the capacity for a word to carry multiple meanings—remains a fundamental challenge in Natural Language Processing. Visual Word Sense Disambiguation (VWSD) extends this challenge to the multimodal domain. Unlike traditional WSD, which selects a definition from a dictionary, VWSD requires a system to select an image that best depicts the intended meaning of a word (e.g., the word "bank" in the context of a river vs. a financial institution).
+
+The SemEval-2023 Task 1 \cite{raganato2023semeval} introduced a standardized benchmark for this problem, emphasizing the difficulty of disambiguation in "limited context" scenarios where the target word is accompanied by only a partial phrase. 
+
+In this report, we address the VWSD task using state-of-the-art vision-language models. We contrast SigLIP2, a highly efficient dual-encoder optimized for retrieval, against Qwen3-VL, a generative model capable of complex reasoning. Our experiments demonstrate that while generative models offer interpretability through reasoning traces, optimized embedding-based retrieval (SigLIP2) provides a more robust solution for the ranking nature of the VWSD task, achieving results competitive with top-tier systems from the 2023 competition.
+
+\section{Related Work}
+Visual Word Sense Disambiguation (VWSD) was formalized as SemEval-2023 Task 1 by Raganato et al. \cite{raganato2023semeval}. The shared task attracted significant attention, receiving 96 valid submissions from 56 teams across three languages: English, Italian, and Farsi. The task proved difficult for standard multimodal models; the zero-shot CLIP baseline achieved only 37.20\% Hit@1, highlighting the need for context-aware disambiguation strategies.
+
+The competition revealed two dominant strategies: fine-grained contrastive learning and retrieval-augmented ensembles.
+\begin{itemize}
+    \item \textbf{SRCB (1st Place English):} Zhang et al. \cite{zhang2023srcb} achieved the state-of-the-art result in English (84.00\% Hit@1) using a retrieval-augmented approach. They utilized external knowledge bases (WordNet, BabelNet) to retrieve definitions and synonyms, expanding the textual context before matching it against images retrieved from LAION-5B.
+    \item \textbf{FCLL (1st Place Multilingual):} Yang et al. \cite{yang2023fcll} proposed a "Fine-grained Contrastive Learning with Logic" framework. They focused on learning a hierarchy of word-sense-image relationships and introduced a "sense auto-complementing" module to enrich short contexts. This approach yielded the best average performance across all languages.
+    \item \textbf{OPI (Learning-to-Rank):} Dadas \cite{dadas2023opi} treated the problem as a ranking task, employing a LambdaMART ranker trained on features extracted from various CLIP variants and external frequency statistics.
+\end{itemize}
+
+While the top 2023 systems relied heavily on complex ensembles and external knowledge bases, our work explores the capabilities of newer, single-model architectures (SigLIP2 and Qwen3-VL) to determine if recent advancements in foundation models can perform disambiguation without extensive external pipelines.
+
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Task Definition}
+\label{subsec:task_definition}
+
+Visual Word Sense Disambiguation (VWSD) aims to identify which image among a set of candidates best illustrates the intended meaning of an ambiguous word in a given textual context. Formally, given an ambiguous target word $w$, a textual context $c$ containing $w$, and a set of $n=10$ candidate images $\mathcal{I} = \{I_1, I_2, \ldots, I_n\}$, the task is to rank the candidate images by their relevance to the intended sense of $w$ in context $c$.
+
+We evaluate performance using two standard ranking metrics. Mean Reciprocal Rank (MRR) is computed as:
+\begin{equation}
+\text{MRR} = \frac{1}{|\mathcal{Q}|} \sum_{i=1}^{|\mathcal{Q}|} \frac{1}{\text{rank}_i}
+\end{equation}
+where $\text{rank}_i$ is the position of the gold image in the ranked list for query $i$. Hit@1 (accuracy) measures the proportion of queries where the correct image is ranked first:
+\begin{equation}
+\text{Hit@1} = \frac{1}{|\mathcal{Q}|} \sum_{i=1}^{|\mathcal{Q}|} \mathbb{1}[\text{rank}_i = 1]
+\end{equation}
+where $\mathbb{1}[\cdot]$ is the indicator function.
+
+\subsection{Approach Overview}
+\label{subsec:approach_overview}
+
+We implement two distinct approaches to VWSD: (1) SigLIP2, an embedding-based retrieval method using vision-language similarity, and (2) Qwen3-VL, a generative vision-language model with multiple inference strategies. SigLIP2 offers fast inference with low memory requirements but limited interpretability, while Qwen3-VL provides flexible inference methods with higher interpretability at the cost of increased computational demands.
+
+\subsection{SigLIP2: Embedding-Based Approach}
+\label{subsec:siglip2}
+
+SigLIP2~\cite{zhai2023siglip} is a vision-language model trained with sigmoid loss on image-text pairs, consisting of a vision encoder $f_v$ and a text encoder $f_t$ that process images and text into embeddings, respectively.
+
+For each instance, we construct a text query by combining the target word and context:
+\begin{equation}
+q = \text{``this is a photo of a } w \text{. } c\text{''}
+\end{equation}
+where $w$ is the target word and $c$ is the full phrase. We then compute embeddings for the text query and all candidate images:
+\begin{align}
+\mathbf{e}_t &= f_t(q) \in \mathbb{R}^d \\
+\mathbf{e}_{v,i} &= f_v(I_i) \in \mathbb{R}^d, \quad i \in \{1, \ldots, n\}
+\end{align}
+where $d$ is the embedding dimension (typically 512--1024).
+
+Similarity between text and each image is computed using the learned projection with sigmoid activation:
+\begin{equation}
+s_i = \sigma(\mathbf{e}_t^\top \mathbf{e}_{v,i})
+\end{equation}
+where $\sigma(x) = \frac{1}{1 + e^{-x}}$ is the sigmoid function. Images are then ranked in descending order of similarity scores. We primarily use the \texttt{siglip2-so400m-patch14-384} variant with 1B parameters and 384$\times$384 resolution for its balance of speed and accuracy.
+
+\subsection{Qwen3-VL: Generative Vision-Language Approach}
+\label{subsec:qwen3vl}
+
+Qwen3-VL~\cite{yang2025qwen3} is a multimodal large language model with a vision encoder that transforms images into visual tokens and an autoregressive transformer that processes interleaved vision and text tokens. We implement four distinct inference strategies using the 8B parameter model.
+
+\subsubsection{Matching (Direct Rating)}
+\label{subsubsec:matching}
+
+The model is prompted to directly rate each image on a 0--10 scale based on how well it matches the intended meaning of the target word in context. For each image $I_i$, we generate a rating $r_i = \text{VLM}(I_i, w, c) \in [0, 10]$ and normalize to obtain the score $s_i = r_i/10$. The prompt explicitly instructs the model to focus on the specific meaning of the ambiguous word in the given context and provide only a numerical rating.
+
+\subsubsection{Matching with Chain-of-Thought}
+\label{subsubsec:matching_cot}
+
+This method extends direct rating by prompting the model to reason step-by-step before providing a rating. The prompt guides the model through three reasoning steps: (1) determining what the target word means in the given context, (2) identifying what the image shows, and (3) assessing whether they match. The model generates a response containing both reasoning and a rating, from which we extract the numerical score using pattern matching for ``Rating: X'' or by extracting the last valid number in the range [0, 10].
+
+\subsubsection{Description-Based Matching}
+\label{subsubsec:description}
+
+Rather than requesting direct ratings, this method prompts the model to generate a brief textual description of what each image shows. We then compute similarity between the generated description and the original text query using cosine similarity of sentence embeddings. Specifically, for each image $I_i$, we generate a description $d_i = \text{VLM}(I_i)$, encode both the description and text query using a sentence encoder, and compute:
+\begin{equation}
+s_i = \text{cosine}(\text{Encode}(d_i), \text{Encode}(q))
+\end{equation}
+
+This approach provides the highest interpretability as the generated descriptions make the model's reasoning explicit.
+
+\subsubsection{Embedding-Based Method}
+\label{subsubsec:vlm_embedding}
+
+Similar to SigLIP2, this method extracts embeddings from the vision-language model without text generation. We construct the same text query format and compute text embeddings by encoding the query through the language model. For each image, we extract visual embeddings from the vision encoder and compute cosine similarity:
+\begin{equation}
+s_i = \text{cosine}(f_t(q), f_v(I_i))
+\end{equation}
+
+This approach offers faster inference than generative methods while maintaining the flexibility to incorporate different encoding strategies.
+
+\subsection{Sense Definition Enrichment}
+\label{subsec:definition_enrichment}
+
+For all generative methods, we optionally enrich prompts with contextual sense definitions generated by Qwen3 text models. We first use a separate Qwen3 \cite{yang2025qwen3}model (4B, 8B, or 14B parameters) to generate a brief definition (10--20 words) of what the target word means in the specific context. This definition is then incorporated into the vision-language model prompts, providing an explicit disambiguation signal. For example, given the word ``bank'' in the context ``I deposited money at the bank,'' the text model generates: ``A financial institution where people store money, make transactions, and access banking services.'' This definition is then included in subsequent prompts to guide the visual reasoning process.
+
+\subsection{Implementation Details}
+\label{subsec:implementation}
+
+To avoid attention dilution in multi-image scenarios, we evaluate each candidate image independently rather than presenting all images simultaneously. For SigLIP2, we process instances sequentially, computing embeddings for one text query and 10 images in a single forward pass. For Qwen3-VL generative methods, we batch all candidate images within each instance together while processing instances sequentially or in small batches (controlled by batch size parameter). The embedding-based VLM method processes images sequentially without batching.
+
+We implement memory management optimizations including cache clearing after each instance batch, explicit GPU memory cleanup after generation, and LRU caching for frequently accessed images. For Qwen3-VL, we use bfloat16 precision or optional 4-bit quantization to reduce memory requirements. All experiments are conducted on a system with sufficient GPU memory to support the model requirements (8--24 GB VRAM for Qwen3-VL depending on quantization settings).
+
+\section{Experiments}
+% These subsections should be included in your Experiments section
+
+\subsection{Task Definition}
+\label{subsec:task_definition}
+
+Visual Word Sense Disambiguation (VWSD) aims to identify which image among a set of candidates best illustrates the intended meaning of an ambiguous word in a given textual context. Formally, given an ambiguous target word $w$, a textual context $c$ containing $w$, and a set of $n=10$ candidate images $\mathcal{I} = \{I_1, I_2, \ldots, I_n\}$, the task is to rank the candidate images by their relevance to the intended sense of $w$ in context $c$.
+
+\subsection{Baseline Method}
+\label{subsec:baseline_method}
+We adopt the CLIP-based baseline from \citet{raganato-etal-2023-semeval} for Visual Word Sense Disambiguation. This approach leverages CLIP's pre-trained vision-language model to compute embeddings for both textual contexts and candidate images.
+
+\textbf{Scoring Function:} For a given query consisting of a target word $w$ and its textual context $c$, and a set of candidate images $\mathcal{I} = \{I_1, I_2, \ldots, I_n\}$, we compute the relevance score between the text and each image using cosine similarity:
+\begin{equation}
+\text{score}(c, I_j) = \frac{\phi_{\text{text}}(c) \cdot \phi_{\text{img}}(I_j)}{||\phi_{\text{text}}(c)|| \cdot ||\phi_{\text{img}}(I_j)||}
+\end{equation}
+where $\phi_{\text{text}}(\cdot)$ and $\phi_{\text{img}}(\cdot)$ are CLIP's text and image encoders, respectively.
+
+\textbf{Text Prompting Strategies:} We evaluate different strategies for constructing the text input to CLIP:
+\begin{itemize}
+\item \textbf{Mask-only}: Replace the target word/phrase with "[mask]" in the context
+\item \textbf{Template-based}: Use "This is [mask]" format
+\item \textbf{Caption-style}: Use "Example of an image caption that explains [mask]"
+\end{itemize}
+For each strategy, we test two variants: using the target word alone or the full target phrase as the masked content. The candidate images are then ranked by their similarity scores in descending order.
+
+
+\subsection{Evaluation Metrics}
+\label{subsec:evaluation}
+
+We evaluate performance using several standard ranking metrics to assess different aspects of retrieval quality.
+
+\textbf{Hit@1 (Accuracy)} measures the proportion of queries where the correct image is ranked first:
+\begin{equation}
+\text{Hit@1} = \frac{1}{|\mathcal{Q}|} \sum_{i=1}^{|\mathcal{Q}|} \mathbb{1}[\text{rank}_i = 1]
+\end{equation}
+where $\mathbb{1}[\cdot]$ is the indicator function and $\text{rank}_i$ is the position of the gold image for query $i$.
+
+\textbf{Mean Reciprocal Rank (MRR)} emphasizes the rank of the first correct result:
+\begin{equation}
+\text{MRR} = \frac{1}{|\mathcal{Q}|} \sum_{i=1}^{|\mathcal{Q}|} \frac{1}{\text{rank}_i}
+\end{equation}
+
+We report MRR at different cutoff values (MRR@5, MRR@10) to evaluate ranking quality at various depths.
+
+\textbf{Mean Average Precision (MAP)} considers the precision at each position where a relevant item is found:
+\begin{equation}
+\text{MAP@k} = \frac{1}{|\mathcal{Q}|} \sum_{i=1}^{|\mathcal{Q}|} \frac{1}{\min(k, |\text{rel}_i|)} \sum_{j=1}^{k} P(j) \cdot \text{rel}(j)
+\end{equation}
+where $P(j)$ is the precision at rank $j$, $\text{rel}(j)$ indicates whether the item at rank $j$ is relevant, and $k$ is the cutoff (5 or 10 in our evaluation).
+
+\textbf{Normalized Discounted Cumulative Gain (NDCG)} accounts for the graded relevance and position of results:
+\begin{equation}
+\text{NDCG@k} = \frac{\text{DCG@k}}{\text{IDCG@k}} = \frac{\sum_{i=1}^{k} \frac{2^{\text{rel}_i} - 1}{\log_2(i+1)}}{\sum_{i=1}^{|\text{rel}|} \frac{2^{\text{rel}_i} - 1}{\log_2(i+1)}}
+\end{equation}
+where $\text{rel}_i$ is the relevance score at position $i$, and IDCG is the ideal DCG obtained by ranking all relevant items at the top.
+
+For the official evaluation, we primarily report Hit@1 and MRR as the main metrics, consistent with the VWSD task benchmarks.
+
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{l|cc|cc|cc}
+\toprule
+\multirow{2}{*}{\textbf{Model}} & \multicolumn{2}{c|}{\textbf{Hit@1}} & \multicolumn{2}{c|}{\textbf{MRR}} & \multicolumn{2}{c}{\textbf{NDCG@10}} \\
+& Official & @1 & Official & @10 & @5 & @10 \\
+\midrule
+\multicolumn{7}{l}{\textit{SemEval '23 SOTA (Previous Results)}} \\
+\midrule
+\textbf{1. SRCB} (Zhang et al.) & \textbf{84.00} & - & \textbf{89.77} & - & - & - \\
+\textbf{2. FCLL} (Yang et al.) & 80.13 & - & 85.81 & - & - & - \\
+\textbf{3. OPI} (Dadas) & 76.61 & - & - & - & - & - \\
+\midrule
+\multicolumn{7}{l}{\textit{Baselines}} \\
+\midrule
+CLIP Baseline (ViT-L/14) & 37.19 & 37.19 & 54.39 & 54.39 & 58.02 & 65.12 \\
+\midrule
+\multicolumn{7}{l}{\textit{Our Method: SigLIP2 Variants}} \\
+\midrule
+base-patch16-224 & 68.25 & 68.25 & 79.76 & 79.76 & 83.06 & 84.72 \\
+\textbf{so400m-patch14-384} & \textbf{72.79} & \textbf{72.79} & \textbf{82.76} & \textbf{82.76} & \textbf{85.50} & \textbf{87.00} \\
+so400m-patch16-512 & 71.49 & 71.49 & 81.89 & 81.89 & 84.91 & 86.34 \\
+giant-opt-patch16-384 & 72.35 & 72.35 & 82.71 & 82.71 & 86.00 & 86.99 \\
+\midrule
+\multicolumn{7}{l}{\textit{Our Method: Qwen3-VL (8B)}} \\
+\midrule
+Embedding  & 9.07 & 9.07 & 29.31 & 29.31 & 29.52 & 45.51 \\
+Matching (Direct Rating) & 61.77 & 61.77 & 75.93 & 75.93 & 79.46 & 81.83 \\
+Matching + CoT & 65.44 & 65.44 & 77.98 & 77.98 & 81.19 & 83.36 \\
+Description + Def (8B) & 63.07 & 63.07 & 74.89 & 74.89 & 77.24 & 80.88 \\
+\bottomrule
+\end{tabular}
+\caption{Main Results on English VWSD. We compare our SigLIP2 and Qwen3-VL implementations against the Zero-shot Baseline and the Top 3 systems from the SemEval-2023 competition (SRCB, FCLL, OPI). While SigLIP2 significantly outperforms the baseline and generative approaches, it trails the highly engineered ensembles of the competition winners.}
+\label{tab:results}
+\end{table*}
+
+\section*{Limitations}
+
+
+\section*{Acknowledgments}
+
+% Bibliography entries for the entire Anthology, followed by custom entries
+%\bibliography{anthology,custom}
+% Custom bibliography entries only
+\bibliography{custom}
+
+\appendix
+
+\section{Example Appendix}
+\label{sec:appendix}
+
+
+\end{document}
