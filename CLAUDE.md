@@ -355,7 +355,47 @@ The processor's tokenizer is always set to `padding_side='left'` for Qwen3-VL ba
 
 ## Fine-tuning with Text Augmentation
 
-SigLIP2 fine-tuning on 12,869 training instances can lead to overfitting. Use VLM-based text augmentation to increase effective dataset size.
+SigLIP2 fine-tuning on 12,869 training instances can lead to overfitting. Use these strategies:
+
+### Preventing Overfitting
+
+1. **Early Stopping**: Stop when validation MRR stops improving
+2. **Lower Learning Rate**: Use `5e-6` instead of `2e-5` to prevent catastrophic forgetting
+3. **Text Augmentation**: Increase dataset diversity with VLM-generated text
+4. **LoRA Regularization**: Higher dropout, lower rank
+
+### Recommended Training Command
+
+```bash
+# Recommended: with augmentation, early stopping, lower LR
+python finetune/train_siglip2_lora.py \
+    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
+    --aug-prob 0.5 \
+    --aug-types caption definition \
+    --lr 5e-6 \
+    --lora-dropout 0.1 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2 \
+    --val-split 0.05
+
+# Without augmentation (baseline comparison)
+python finetune/train_siglip2_lora.py \
+    --lr 5e-6 \
+    --lora-dropout 0.1 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2 \
+    --val-split 0.05
+```
+
+### Early Stopping Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--early-stopping` | off | Enable early stopping based on validation MRR |
+| `--early-stopping-patience` | 2 | Stop after N epochs without MRR improvement |
+| `--early-stopping-min-delta` | 0.001 | Minimum improvement to count as progress |
 
 ### Text Augmentation Pipeline
 
@@ -376,22 +416,28 @@ python finetune/generate_augmentations.py --type caption --resume
 python finetune/generate_augmentations.py --type all --limit 100
 ```
 
-**Step 2: Train with augmentation**:
+**Step 2: Train with augmentation and early stopping**:
 ```bash
 # Train with VLM-augmented data (50% augmented, 50% original)
 python finetune/train_siglip2_lora.py \
     --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
     --aug-prob 0.5 \
     --aug-types caption definition \
-    --val-split 0.05 \
-    --epochs 10
+    --lr 5e-6 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2 \
+    --val-split 0.05
 
 # Higher augmentation probability (more diverse training)
 python finetune/train_siglip2_lora.py \
     --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
     --aug-prob 0.7 \
     --aug-types caption definition paraphrase \
-    --epochs 10
+    --lr 5e-6 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2
 ```
 
 ### Augmentation Types

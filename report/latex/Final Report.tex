@@ -34,6 +34,12 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{url}
+\usepackage[table]{xcolor}
+
+% Define colors for top-3 highlighting
+\definecolor{gold}{RGB}{255, 215, 0}
+\definecolor{silver}{RGB}{192, 192, 192}
+\definecolor{bronze}{RGB}{205, 127, 50}
 
 % If the title and author information does not fit in the area allocated, uncomment the following
 %
@@ -92,9 +98,14 @@ Two paradigms have emerged for multimodal understanding: \textit{discriminative}
 We systematically compare:
 \begin{itemize}
     \item \textbf{SigLIP2} \cite{zhai2023siglip}: A dual-encoder using sigmoid loss instead of contrastive loss, yielding better-calibrated similarity scores for ranking.
+    \item \textbf{CLIP ViT-L/14 and ViT-G/14} \cite{radford2021clip}: Strong baseline dual-encoders widely used in multimodal retrieval. We evaluate their zero-shot performance and further apply LoRA fine-tuning to assess whether lightweight adaptation improves VWSD.
+
     \item \textbf{Qwen3-VL} \cite{yang2025qwen3}: An 8B-parameter autoregressive VLM evaluated across five inference strategies: direct matching, Chain-of-Thought reasoning, sense definition prompting, embedding extraction, and caption-based text similarity.
+    \item \textbf{Text-Augmented Retrieval}: Expands the query with LLM-generated paraphrases, explanations, and captions, and aggregates similarity scores across augmented variants.
+    \item \textbf{Text-to-Image Matching}: Generates images from the query via Gemini 2.5 API and performs image–image similarity matching against candidate images.
     \item \textbf{Cascade Reranking}: A two-stage pipeline combining SigLIP2 retrieval with VLM reranking of top-$K$ candidates.
-    \item \textbf{LoRA Fine-tuning}: Parameter-efficient adaptation of CLIP with VLM-generated text augmentation (captions, definitions, paraphrases).
+    \item \textbf{LoRA Fine-tuning}: Parameter-efficient adaptation applied to both SigLIP2 and CLIP variants, combined with VLM-generated text augmentation (captions, definitions, paraphrases).
+
 \end{itemize}
 
 \noindent\textbf{Key Contributions:}
@@ -212,19 +223,27 @@ h = W_0 x + \frac{\alpha}{r} BA x
 \end{equation}
 where $W_0$ is the frozen pre-trained weight, $B \in \mathbb{R}^{d \times r}$ and $A \in \mathbb{R}^{r \times d}$ are trainable low-rank matrices, $r$ is the rank, and $\alpha$ is a scaling factor.
 
-We apply LoRA to attention projection layers (\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, \texttt{out\_proj}) of CLIP's text encoder while freezing the vision encoder entirely. Training uses SigLIP-style contrastive loss with hard negatives (other candidate images for the same word) but without in-batch negatives to avoid false negative issues when different instances share semantically similar correct images.
+We apply LoRA to both CLIP and SigLIP2 models, targeting attention projection layers (\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, \texttt{out\_proj}) while freezing the vision encoder entirely. For CLIP, we fine-tune \texttt{laion/CLIP-ViT-L-14}; for SigLIP2, we fine-tune \texttt{google/siglip2-base-patch16-512}. Training uses SigLIP-style sigmoid contrastive loss:
+\begin{equation}
+\mathcal{L} = -\log \sigma(s^+) - \sum_{j=1}^{N} \log \sigma(-s_j^-)
+\end{equation}
+where $s^+ = f_t(q)^\top f_v(I^+)$ is the positive similarity and $s_j^-$ are similarities with $N=5$ hard negatives (other candidate images for the same word). We disable in-batch negatives to avoid false negative issues when different instances share semantically similar correct images.
+
+\subsubsection{Training Configuration}
+
+We use LoRA rank $r=16$, scaling factor $\alpha=32$, and dropout 0.05. Training employs AdamW with learning rate $2 \times 10^{-5}$, batch size 8, and gradient accumulation over 4 steps (effective batch size 32). We train for 5--10 epochs with bfloat16 mixed precision and 10\% linear warmup. The complete configuration adds only $\sim$2M trainable parameters to the $\sim$878M frozen base model.
 
 \subsubsection{VLM-Based Text Augmentation}
 
-To combat overfitting on the limited training data (12,869 instances), we augment text queries using VLMs. Three augmentation types are generated and cached:
+To combat overfitting on the limited training data (12,869 instances), we augment text queries using VLMs. We generate three augmentation types offline and cache them for efficient training:
 
-\textbf{Captions:} Qwen3-VL generates natural descriptions of gold images (e.g., ``A sloped riverbank covered with green grass''), providing image-grounded alternatives to the original context.
+\textbf{Captions} (Qwen3-VL-8B): Natural descriptions of gold images (e.g., ``A solitary wading bird stands alert on moss-covered rocks near the water's edge''), providing image-grounded alternatives to the minimal original context. We generate one caption per instance using max 150 tokens.
 
-\textbf{Definitions:} Qwen3 text models produce visual sense definitions (e.g., ``Sloped land beside a river''), offering semantically precise but stylistically different queries.
+\textbf{Definitions} (Qwen3-8B): Visual sense definitions that describe what would appear in an image for the intended meaning (e.g., ``Long-necked wading bird with gray plumage in wetland habitat''). These offer semantically precise but stylistically different queries.
 
-\textbf{Paraphrases:} The context phrase is rephrased into multiple variants (e.g., ``river bank'' $\rightarrow$ ``stream bank'', ``creek bank edge''), increasing lexical diversity.
+\textbf{Paraphrases} (Qwen3-8B): Three rephrased variants of the context phrase that preserve the target word (e.g., ``midnight bluegrass'' $\rightarrow$ ``Bluegrass at midnight'', ``Midnight-colored bluegrass''), increasing lexical diversity.
 
-During training, original queries are replaced with augmented versions with probability $p_{\text{aug}}$, with uniform random selection among available augmentation types.
+In total, we generate augmentations for 12,840 instances (99.8\% coverage), yielding approximately 51,000 augmented text variants (1 caption + 1 definition + 3 paraphrases per instance). During training, original queries are replaced with augmented versions with probability $p_{\text{aug}}=0.5$, with uniform random selection among available augmentation types.
 
 \section{Experiments}
 \label{sec:experiments}
@@ -275,22 +294,30 @@ Table~\ref{tab:results} presents our main results on the English test set (463 i
 \toprule
 \textbf{Method} & \textbf{Hit@1} & \textbf{MRR} & \textbf{NDCG} \\
 \midrule
-\multicolumn{4}{l}{\textit{SemEval-2023 Winners}} \\
+\multicolumn{4}{l}{\textit{SemEval-2023 Winners (with external knowledge)}} \\
 \midrule
-SRCB \cite{zhang2023srcb} & 84.02 & 89.56 & -- \\
-FCLL \cite{yang2023fcll} & 80.13 & 87.42 & -- \\
-OPI \cite{dadas2023opi} & 77.97 & 85.88 & -- \\
+SRCB \cite{zhang2023srcb} & \cellcolor{gold}84.02 & \cellcolor{gold}89.56 & -- \\
+FCLL \cite{yang2023fcll} & \cellcolor{silver}80.13 & \cellcolor{silver}87.42 & -- \\
+OPI \cite{dadas2023opi} & \cellcolor{bronze}77.97 & \cellcolor{bronze}85.88 & -- \\
 \midrule
-\multicolumn{4}{l}{\textit{Baseline}} \\
+\multicolumn{4}{l}{\textit{CLIP (Zero-Shot)}} \\
 \midrule
-CLIP (ViT-B/32) & 61.34 & 74.66 & 80.83 \\
+ViT-B/32 & 61.34 & 74.66 & 80.83 \\
+ViT-L/14 & 61.98 & 75.70 & 81.98 \\
+ViT-H/14 & 63.28 & 76.99 & 76.16 \\
+ViT-G/14 & 65.65 & 78.56 & 81.94 \\
 \midrule
-\multicolumn{4}{l}{\textit{SigLIP2 (Discriminative)}} \\
+\multicolumn{4}{l}{\textit{CLIP + Augmentation (Zero-Shot)}} \\
+\midrule
+ViT-L/14 + Text2Image & 65.23 & 76.39 & 82.86 \\
+ViT-L/14 + Text Aug & 73.43 & 83.29 & \cellcolor{bronze}87.65 \\
+\midrule
+\multicolumn{4}{l}{\textit{SigLIP2 (Zero-Shot)}} \\
 \midrule
 Base (patch16-512) & 68.03 & 79.81 & 84.77 \\
 so400m (patch14-384) & 72.79 & 82.76 & 87.00 \\
 \quad + def (append) & 72.57 & 82.05 & 86.42 \\
-\quad + def (replace context) & 69.11 & 79.58 & 84.53 \\
+\quad + def (replace) & 69.11 & 79.58 & 84.53 \\
 \quad + def (only) & 61.34 & 74.46 & 80.67 \\
 \midrule
 \multicolumn{4}{l}{\textit{Qwen3-VL 8B (Generative)}} \\
@@ -303,19 +330,22 @@ Caption $\rightarrow$ SBERT & 48.60 & 65.10 & 73.52 \\
 \midrule
 \multicolumn{4}{l}{\textit{Cascade (Ours)}} \\
 \midrule
-SigLIP2 + VLM Rerank & 77.32 & 85.75 & 89.24 \\
+SigLIP2 + VLM Rerank & 77.32 & 85.75 & \cellcolor{gold}89.24 \\
 \midrule
-\multicolumn{4}{l}{\textit{Fine-Tuned}} \\
+\multicolumn{4}{l}{\textit{Fine-Tuned (LoRA)}} \\
 \midrule
-CLIP (ViT-L/14) + LoRA & 75.59 & 84.82 & -- \\
+CLIP ViT-L/14 & 75.59 & 84.82 & 87.59 \\
+CLIP ViT-G/14 & 75.37 & 84.78 & 84.28 \\
+SigLIP2 (base) & 70.63 & 81.17 & 85.91 \\
+\quad + Text Aug & 75.81 & 85.42 & \cellcolor{silver}89.12 \\
 \bottomrule
 \end{tabular}%
 }
-\caption{Results on English VWSD test set (463 instances). NDCG is computed at $k$=10. SigLIP2 variants differ in model size: Base (patch16-512) vs. so400m (patch14-384, 1B params). The cascade approach (SigLIP2 retrieval + VLM CoT reranking of top-5) achieves the best zero-shot performance.}
+\caption{Results on English VWSD test set (463 instances). NDCG is computed at $k$=10. Top-3 results highlighted: \colorbox{gold}{1st}, \colorbox{silver}{2nd}, \colorbox{bronze}{3rd}. For NDCG, highlighting is among our methods since SemEval winners do not report this metric. Our cascade approach achieves the best zero-shot performance (77.32\% Hit@1). Text augmentation provides a 5.18-point improvement for SigLIP2 fine-tuning.}
 \label{tab:results}
 \end{table}
 
-\textbf{Result Summary.} Table~\ref{tab:results} reveals a clear hierarchy across method categories. Among \textit{zero-shot discriminative} methods, SigLIP2 so400m achieves the highest Hit@1 (72.79\%), outperforming zero-shot CLIP by 11.45 points and establishing the effectiveness of sigmoid-based contrastive training for retrieval tasks. Our CLIP baseline (61.34\%) substantially exceeds the official SemEval-2023 baseline (37.20\%) due to improved prompt templates. Within \textit{generative} methods, Chain-of-Thought reasoning (65.44\%) leads, followed by sense definition prompting (63.07\%) and direct matching (61.77\%); notably, the embedding extraction method fails catastrophically (9.07\%), confirming that VLM representations are unsuited for direct similarity computation. The \textit{cascade} approach combining SigLIP2 retrieval with VLM reranking achieves our best zero-shot result (77.32\% Hit@1, 85.75\% MRR), demonstrating that discriminative and generative methods are complementary. For \textit{fine-tuned} methods, LoRA-adapted CLIP (75.59\%) outperforms all zero-shot methods except our cascade; we examined three training regimes and found that minimal adaptation (500 samples, 1 epoch) with text augmentation outperformed larger configurations that exhibited overfitting.
+\textbf{Result Summary.} Table~\ref{tab:results} reveals a clear hierarchy across method categories. Among \textit{zero-shot discriminative} methods, SigLIP2 so400m achieves the highest Hit@1 (72.79\%), outperforming zero-shot CLIP by 11.45 points and establishing the effectiveness of sigmoid-based contrastive training for retrieval tasks. Our CLIP baseline (61.34\%) substantially exceeds the official SemEval-2023 baseline (37.20\%) due to improved prompt templates. Within \textit{generative} methods, Chain-of-Thought reasoning (65.44\%) leads, followed by sense definition prompting (63.07\%) and direct matching (61.77\%); notably, the embedding extraction method fails catastrophically (9.07\%), confirming that VLM representations are unsuited for direct similarity computation. The \textit{cascade} approach combining SigLIP2 retrieval with VLM reranking achieves our best zero-shot result (77.32\% Hit@1, 85.75\% MRR), demonstrating that discriminative and generative methods are complementary. For \textit{fine-tuned} methods, LoRA-adapted CLIP (75.59\%) and SigLIP2 with text augmentation (75.81\%) achieve comparable performance; however, SigLIP2 without augmentation (70.63\%) significantly underperforms, demonstrating that VLM-generated text augmentation is critical for preventing overfitting on the limited 12,869 training instances.
 
 \subsection{Analysis and Discussion}
 
@@ -333,7 +363,11 @@ Our experiments reveal several key findings about discriminative vs. generative 
 
 \textbf{Finding 6: Complementarity through error orthogonality.} The cascade pipeline achieves 77.32\% Hit@1, outperforming both components alone. This synergy arises from error orthogonality: SigLIP2 and Qwen3-VL fail on different instances. SigLIP2 struggles with cases dominated by pre-training frequency biases (e.g., ``bank'' strongly associated with financial institutions), while Qwen3-VL's explicit reasoning can override such biases. Conversely, Qwen3-VL's uncalibrated scoring fails on cases requiring fine-grained visual discrimination, where SigLIP2's retrieval-optimized embeddings excel. By limiting VLM reasoning to the top-5 candidates, the cascade concentrates expensive computation on genuinely ambiguous cases while preserving the discriminative model's advantage on clear-cut instances.
 
-\textbf{Finding 7: The preservation-adaptation trade-off.} LoRA fine-tuning achieves 75.59\% Hit@1 with only 500 samples and 1 epoch---larger regimes cause performance degradation. This reveals that VWSD success depends heavily on pre-trained representations: the general visual-linguistic associations learned from web-scale data are more valuable than task-specific patterns learned from 12,869 instances. Aggressive adaptation destroys these associations, causing embedding drift. Text augmentation (paraphrasing, synonym substitution) outperforms additional training data because it increases query diversity without overfitting to VWSD-specific patterns. This finding suggests a general principle for low-data multimodal tasks: preserve pre-trained representations and augment inputs rather than adapting weights.
+\textbf{Finding 7: The preservation-adaptation trade-off.} LoRA fine-tuning reveals a critical tension between task adaptation and representation preservation. Without text augmentation, SigLIP2 + LoRA achieves only 70.63\% Hit@1 after 1 epoch and shows rapid overfitting: training loss continues decreasing while validation performance degrades in subsequent epochs. With VLM-generated text augmentation (captions, definitions, paraphrases), the same model reaches 75.81\% Hit@1---a 5.18-point improvement---and exhibits slower overfitting with a broader performance plateau.
+
+This reveals that VWSD success depends heavily on pre-trained representations: the general visual-linguistic associations learned from web-scale data are more valuable than task-specific patterns learned from 12,869 instances. Aggressive adaptation destroys these associations, causing embedding drift. Text augmentation works by increasing effective query diversity: rather than seeing ``river bank'' repeatedly, the model encounters ``Sloped land beside a flowing stream'' (definition) or ``A muddy riverbank with green vegetation'' (caption), preventing memorization of surface patterns. Notably, caption augmentation (75.81\%) slightly outperforms definition augmentation (73.65\%), suggesting that natural image descriptions better match the model's pre-training distribution than structured definitions.
+
+This finding suggests a general principle for low-data multimodal tasks: preserve pre-trained representations through conservative adaptation (low learning rate, few epochs) and augment inputs with diverse text variants rather than aggressively adapting weights.
 
 \textbf{Gap to State-of-the-Art.} Our cascade (77.32\%) narrows the gap to SRCB (84.02\%) to 6.70 points without external knowledge bases. SRCB's advantage stems from retrieving additional training signals from LAION-5B and structured knowledge from WordNet/BabelNet. This suggests that further gains require either (1) scaling inference-time retrieval to access relevant visual examples, or (2) improving pre-training to encode richer sense-level distinctions. Pure model architecture improvements appear to have diminishing returns at this performance level.
 
@@ -344,7 +378,7 @@ Our experiments reveal several key findings about discriminative vs. generative 
 
 \textbf{Model scale constraints.} We evaluate only the 8B Qwen3-VL variant due to GPU memory limitations. Larger models (72B+) may exhibit stronger reasoning that could narrow the discriminative-generative gap. However, our core finding---that generation acts as a representation bridge---would likely hold regardless of scale, as it reflects architectural rather than capacity limitations.
 
-\textbf{Unexplored design space.} Several promising directions remain unexplored: (1) fine-tuning SigLIP2 rather than CLIP, which may preserve better retrieval properties; (2) prompt ensembles that combine multiple reasoning strategies; (3) adaptive cascade thresholds that vary $K$ based on first-stage confidence. Our LoRA experiments used batch size 1 on CPU, which may have limited training dynamics.
+\textbf{Unexplored design space.} Several promising directions remain unexplored: (1) fine-tuning larger SigLIP2 variants (so400m) rather than the base model, which may achieve higher absolute performance; (2) prompt ensembles that combine multiple reasoning strategies; (3) adaptive cascade thresholds that vary $K$ based on first-stage confidence; (4) combining fine-tuned SigLIP2 with cascade reranking.
 
 \textbf{Causal attribution.} While we propose mechanistic explanations (representation geometry, externalization paradox, error orthogonality), we do not provide causal verification through controlled interventions. Our hypotheses are consistent with observed results but alternative explanations may exist.
 
@@ -374,9 +408,29 @@ This study reveals that Visual Word Sense Disambiguation exposes fundamental dif
 \end{itemize}
 For the paper, Rui wrote the abstract, introduction, related work (Section~\ref{sec:related}), methodology (Section~\ref{sec:method}), analysis and discussion (Section~\ref{sec:experiments}), limitations (Section~\ref{sec:limitations}), conclusion (Section~\ref{sec:conclusion}), and appendix examples.
 
-\textbf{Jiawei Pei} contributed to [TODO: Add Jiawei's contributions here].
+\textbf{Jiawei Pei} contributed to the construction of augmented datasets, large-scale CLIP benchmarking, and robustness evaluation under both text-only and text-to-image perturbations, including:
+\begin{itemize}
+    \item \textit{Model evaluation}: Performed systematic benchmarking of CLIP encoders (ViT-B/14, ViT-L/14, and ViT-G/14) at 384px resolution, establishing comparative retrieval performance across architectures of different scales.
 
-\textbf{Nilaksan Selliah} contributed to [TODO: Add Nilaksan's contributions here].
+    \item \textit{Dataset construction}: Developed multiple augmented datasets, including (1) a paraphrased and prompt-varied version of the training and test text corpora using Gemini-generated rewrites, and (2) a phrase-conditioned text-to-image dataset created to evaluate model robustness under generative perturbations.
+
+    \item \textit{Text-augmentation experiments}: Conducted controlled evaluations of CLIP models (ViT-L/14, ViT-H/14, and ViT-G/14) using only the text-augmented datasets, analyzing how semantic rewriting influences the retrieval consistency of large-scale encoders.
+
+    \item \textit{Text-to-image evaluation pipeline}: Implemented phrase-conditioned image generation and used it to assess CLIP encoders (ViT-L/14 and ViT-H/14) under synthetic visual variations, including a full refactoring of the evaluation codebase to compute pairwise image similarity for quantitative comparison.
+\end{itemize}
+
+For the paper, Jiawei contributed to the writing of the introduction, the reporting and analysis of results from the text-augmentation and text-to-image methods, the construction of appendix examples, and the verification and consolidation of bibliographic references.
+
+
+
+\textbf{Nilaksan Selliah} conducted extensive model benchmarking and LoRA-based adaptation experiments, including:
+\begin{itemize}
+    \item \textit{Model evaluation}: Systematic testing of multiple discriminative encoders, including LAION CLIP ViT-L/14, ViT-G/14, ViT-H/14, and SigLIP Large (patch-16) at 224px and 384px resolutions, establishing comparative performance across architectures.
+    \item \textit{LoRA fine-tuning}: Parameter-efficient adaptation of CLIP ViT-L/14 using attention-only LoRA, followed by controlled comparisons against zero-shot baselines. Additional experiments included LoRA on ViT-G/14 to assess scalability across backbones.
+    \item \textit{Text augmentation studies}: Evaluation of CLIP ViT-L/14 and ViT-G/14 using augmented textual inputs (paraphrases, synonyms, lexical rewrites), analyzing the effect of semantic variation on LoRA robustness.
+    \item \textit{Ablation and result synthesis}: Comparison of LoRA vs.\ zero-shot models under standard and augmented settings, contributing to model selection for the final experimental pipeline.
+\end{itemize}
+For the paper, Nilaksan contributed to the abstract, the introduction and the reporting of CLIP and LoRA results in the main experimental findings.
 
 \section*{Acknowledgments}
 
@@ -444,6 +498,70 @@ Definitions are generated using Qwen3-8B with few-shot prompting:
 
 Examples from few-shot prompt: ``bank'' + ``river bank'' $\rightarrow$ ``Sloped land beside a river or stream''; ``bass'' + ``bass guitar'' $\rightarrow$ ``Large, low-pitched electric guitar with four strings''.
 
+\subsection{Text Augmentation Examples}
+
+We provide concrete examples of each augmentation type used for SigLIP2 fine-tuning. All augmentations are pre-generated by VLMs and cached for efficient training.
+
+\subsubsection{Caption Augmentation}
+
+Qwen3-VL-8B generates natural language descriptions of the gold image for each training instance:
+
+\begin{itemize}
+    \item \textbf{Original context:} ``crane bird''
+    \item \textbf{Generated caption:} ``A solitary wading bird, likely a Willet or similar shorebird, stands alert on a cluster of moss-covered, rounded rocks near the water's edge. Its long legs are visible, and its plumage appears mottled brown and gray.''
+\end{itemize}
+
+\begin{itemize}
+    \item \textbf{Original context:} ``midnight bluegrass''
+    \item \textbf{Generated caption:} ``A single delicate grass seed head, possibly bluegrass, stands against a softly blurred dark background. The seeds are arranged in a loose, airy cluster at the top of a slender stem.''
+\end{itemize}
+
+\subsubsection{Definition Augmentation}
+
+Qwen3-8B generates visual definitions describing what would appear in an image:
+
+\begin{itemize}
+    \item \textbf{Original context:} ``crane bird'' $\rightarrow$ ``Long-necked wading bird with gray plumage in wetland habitat''
+    \item \textbf{Original context:} ``bank deposit'' $\rightarrow$ ``Financial institution building with columns and vault''
+    \item \textbf{Original context:} ``river bank'' $\rightarrow$ ``Sloped land beside a flowing stream with vegetation''
+\end{itemize}
+
+\subsubsection{Paraphrase Augmentation}
+
+Qwen3-8B generates three paraphrased variants that preserve the target word:
+
+\begin{itemize}
+    \item \textbf{Original:} ``midnight bluegrass''
+    \item \textbf{Paraphrases:}
+    \begin{enumerate}
+        \item ``Bluegrass at midnight''
+        \item ``Midnight-colored bluegrass''
+        \item ``Bluegrass under the midnight sky''
+    \end{enumerate}
+\end{itemize}
+
+\begin{itemize}
+    \item \textbf{Original:} ``crane habitat''
+    \item \textbf{Paraphrases:}
+    \begin{enumerate}
+        \item ``Natural habitat of cranes''
+        \item ``Crane's wetland habitat''
+        \item ``Marshland crane habitat''
+    \end{enumerate}
+\end{itemize}
+
+\subsubsection{Augmentation Statistics}
+
+\begin{itemize}
+    \item \textbf{Training instances:} 12,869
+    \item \textbf{Augmented coverage:} 12,840 instances (99.8\%)
+    \item \textbf{Total augmented variants:} $\sim$51,000 (1 caption + 1 definition + 3 paraphrases per instance)
+    \item \textbf{Cache size:} 39 MB (17 MB merged index + 22 MB individual caches)
+    \item \textbf{Generation time:} $\sim$4 hours on NVIDIA RTX 4090
+\end{itemize}
+
+During training, each sample has a 50\% probability of using an augmented query instead of the original context. This effectively quadruples the diversity of text queries seen during training, helping prevent overfitting to surface patterns in the limited training data.
+
 \subsection{Successful Disambiguation Cases}
 
 \textbf{Example 1: ``crane bird''}
@@ -506,7 +624,7 @@ The vision encoder (e.g., CLIP/SigLIP) prioritized \textbf{stylistic and textura
     \centering
     \begin{minipage}{0.32\textwidth}
         \centering
-        \includegraphics[width=\textwidth]{proposalTemplate/images/1_query_7.jpg} % 替换你的文件名
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_query_7.jpg}
         \caption*{(a) Generated Query}
     \end{minipage}
     \hfill

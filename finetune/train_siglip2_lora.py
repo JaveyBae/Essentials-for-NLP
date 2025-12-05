@@ -816,6 +816,7 @@ def train(args):
     # Training loop
     best_mrr = 0.0
     global_step = 0
+    epochs_without_improvement = 0  # For early stopping
 
     # Initialize metrics tracking
     metrics = TrainingMetrics()
@@ -848,6 +849,11 @@ def train(args):
         print(f"  Validation split: {args.val_split:.0%} of training data")
     else:
         print(f"  Validation: test set")
+    print(f"Early Stopping:")
+    print(f"  Enabled: {args.early_stopping}")
+    if args.early_stopping:
+        print(f"  Patience: {args.early_stopping_patience} epochs")
+        print(f"  Min delta: {args.early_stopping_min_delta}")
     print(f"Data Loading (GPU utilization):")
     print(f"  DataLoader workers: {args.num_workers}")
     print(f"  Prefetch factor: {args.prefetch_factor}")
@@ -988,9 +994,10 @@ def train(args):
                         f"but Val loss ↑ ({prev_val_loss:.4f} → {val_loss:.4f})"
                     )
 
-            # Save best model
-            if val_metrics['mrr'] > best_mrr:
+            # Save best model and check early stopping
+            if val_metrics['mrr'] > best_mrr + args.early_stopping_min_delta:
                 best_mrr = val_metrics['mrr']
+                epochs_without_improvement = 0
                 print(f"New best MRR! Saving model...")
 
                 # Save LoRA adapters
@@ -1013,6 +1020,9 @@ def train(args):
                         },
                         'args': vars(args),
                     }, f, indent=2)
+            else:
+                epochs_without_improvement += 1
+                print(f"No improvement for {epochs_without_improvement} epoch(s) (best MRR: {best_mrr:.4f})")
 
         # Track epoch metrics
         metrics.add_epoch_metrics(
@@ -1040,6 +1050,16 @@ def train(args):
             model.save_pretrained(checkpoint_dir)
             processor.save_pretrained(checkpoint_dir)
             print(f"Saved checkpoint to {checkpoint_dir}")
+
+        # Early stopping check
+        if args.early_stopping and epochs_without_improvement >= args.early_stopping_patience:
+            print(f"\n{'='*60}")
+            print(f"EARLY STOPPING TRIGGERED!")
+            print(f"No improvement for {args.early_stopping_patience} consecutive epochs.")
+            print(f"Best MRR: {best_mrr:.4f}")
+            print(f"Stopping at epoch {epoch + 1}/{args.epochs}")
+            print(f"{'='*60}\n")
+            break
 
     # Save final model
     model.save_pretrained(output_dir / "final_model")
@@ -1189,6 +1209,25 @@ def main():
     # Validation (uses TEST data, not a train split)
     parser.add_argument("--val-every", type=int, default=1, help="Validate every N epochs")
     parser.add_argument("--val-samples", type=int, default=500, help="Max validation samples")
+
+    # Early stopping
+    parser.add_argument(
+        "--early-stopping",
+        action="store_true",
+        help="Enable early stopping based on validation MRR"
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=2,
+        help="Stop after N epochs without MRR improvement (default: 2)"
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.001,
+        help="Minimum MRR improvement to count as progress (default: 0.001)"
+    )
 
     # Output
     parser.add_argument(

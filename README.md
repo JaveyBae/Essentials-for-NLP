@@ -104,19 +104,26 @@ python main.py --cascade --topk 3 --siglip2-model siglip2-giant-opt-patch16-384 
 ### Fine-tuning SigLIP2
 
 ```bash
-# Basic LoRA fine-tuning
-python finetune/train_siglip2_lora.py --epochs 10 --batch-size 32
+# LoRA fine-tuning with early stopping (recommended)
+python finetune/train_siglip2_lora.py --lr 5e-6 --epochs 10 --early-stopping --early-stopping-patience 2 --val-split 0.05
 
 # With text augmentation (reduces overfitting)
-python finetune/train_siglip2_lora.py \
-    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
-    --aug-prob 0.5 \
-    --aug-types caption definition \
-    --epochs 10
+python finetune/train_siglip2_lora.py --augmentation-file results/text_augmentations/train_en_augmentations_index.json --aug-prob 0.5 --aug-types caption definition --lr 5e-6 --epochs 10 --early-stopping --early-stopping-patience 2 --val-split 0.05
 
 # Generate augmentations first (one-time, ~4 hours)
 python finetune/generate_augmentations.py --type all
 ```
+
+**Key fine-tuning options:**
+| Option | Recommended | Description |
+|--------|-------------|-------------|
+| `--lr` | `5e-6` | Lower LR prevents catastrophic forgetting |
+| `--early-stopping` | on | Stop when validation MRR stops improving |
+| `--early-stopping-patience` | 2 | Epochs to wait before stopping |
+| `--val-split` | 0.05 | Hold out 5% for validation loss curves |
+| `--aug-prob` | 0.5 | 50% chance to use augmented text |
+
+See [finetune/README.md](finetune/README.md) for detailed documentation.
 
 ### Evaluation
 
