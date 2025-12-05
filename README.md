@@ -19,16 +19,16 @@ This project implements **Visual Word Sense Disambiguation (VWSD)** using multim
 
 **Three approaches implemented:**
 1. **SigLIP2**: Fast embedding-based ranking (~72% Hit@1)
-2. **Qwen3-VL**: Advanced VLM with 7 inference methods
+2. **Qwen3-VL**: Advanced VLM with 5 inference methods
 3. **Cascade Reranking**: Two-stage pipeline combining speed and accuracy
 
 ## Contributions
 
 | Contributor | Contributions |
 |-------------|---------------|
-| **Rui Zhou** | Core architecture design, SigLIP2/Qwen3-VL integration, cascade reranking pipeline, sense definition enrichment, fine-tuning module, inference engine (7 methods: matching, matching_cot, description, embedding, caption, text_augmentation, image_generation) |
-| **Jiawei Pei** | CLIP baseline implementation, text augmentation with Gemini API, data preprocessing, project setup and structure |
-| **Nilaksan Sandrakumar** | OpenCLIP experiments (ViT-H/14, ViT-G/14), SigLIP baseline evaluation, CLIP LoRA fine-tuning experiments |
+| **Rui Zhou** | Core architecture design • SigLIP2 & Qwen3-VL integration • Cascade reranking pipeline • SigLIP2 LoRA fine-tuning with early stopping • VLM-based text augmentation (caption/definition/paraphrase) • 5 inference methods (matching, matching_cot, description, embedding, caption) • Sense definition enrichment • Evaluation metrics • Project refactoring & documentation |
+| **Jiawei Pei** | CLIP baseline implementation • Text augmentation with Gemini API • Data preprocessing • Project setup and structure |
+| **Nilaksan Sandrakumar** | OpenCLIP experiments (ViT-H/14, ViT-G/14) • SigLIP baseline evaluation • CLIP LoRA fine-tuning experiments |
 
 ## Quick Start
 
@@ -60,7 +60,7 @@ python main.py --model-type siglip2 --language fa  # Farsi
 python main.py --model-type siglip2 --language it  # Italian
 ```
 
-### Qwen3-VL Inference (5 Methods)
+### Qwen3-VL Inference
 
 ```bash
 # Method 1: matching - Direct 0-10 rating (baseline)
