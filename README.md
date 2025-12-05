@@ -9,7 +9,7 @@
 [![contributors](https://img.shields.io/github/contributors-anon/JaveyBae/Essentials-for-NLP?color=yellow&style=flat-square)](https://github.com/JaveyBae/Essentials-for-NLP/graphs/contributors)
 [![license](https://img.shields.io/badge/License-Academic%20Research-blue.svg?style=flat-square)](https://github.com/JaveyBae/Essentials-for-NLP)
 [![python](https://img.shields.io/badge/Python-3.10-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
-[![pytorch](https://img.shields.io/badge/PyTorch-2.8.0-EE4C2C.svg?style=flat-square&logo=pytorch)](https://pytorch.org/)
+[![pytorch](https://img.shields.io/badge/PyTorch-2.9.0-EE4C2C.svg?style=flat-square&logo=pytorch)](https://pytorch.org/)
 
 </h4>
 
@@ -35,7 +35,7 @@ This project implements **Visual Word Sense Disambiguation (VWSD)** using multim
 ```bash
 # Setup
 conda create -n vwsd python=3.10 -y && conda activate vwsd
-pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
 
@@ -222,7 +222,7 @@ python eval/vwsd_ranking_metric.py \
 - **GPU**: NVIDIA GPU with 16GB+ VRAM
 - **CUDA**: 12.8
 - **Python**: 3.10
-- **PyTorch**: 2.8.0+
+- **PyTorch**: 2.9.0+
 
 ## Authors
 
