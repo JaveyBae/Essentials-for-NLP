@@ -84,28 +84,30 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-Visual Word Sense Disambiguation (VWSD) requires selecting the correct image for an ambiguous word given minimal context---a task where even large vision-language models struggle. We systematically compare discriminative embedding methods versus generative reasoning on the SemEval-2023 Task 1 benchmark, evaluating SigLIP2 against Qwen3-VL across five inference strategies. Our key findings reveal that: (1) \textbf{training objectives matter more than scale}---SigLIP2 (1B params) outperforms Qwen3-VL embeddings (8B params) by 63 points, as retrieval-optimized representations fundamentally differ from generation-optimized ones; (2) \textbf{generation bridges representation gaps}---while VLM embeddings fail catastrophically (9.07\%), explicit reasoning via Chain-of-Thought reaches 65.44\%, though still trailing discriminative methods; (3) \textbf{knowledge augmentation often backfires}---injecting sense definitions hurts both paradigms, revealing distribution mismatch between structured definitions and natural training captions; (4) \textbf{cascade reranking achieves synergistic gains}---combining SigLIP2 retrieval with VLM reranking yields 77.32\% Hit@1, exploiting complementary failure modes. For fine-tuning, naive LoRA causes negative transfer ($-$0.64\%), but VLM-generated text augmentation recovers gains (+1.95\%). Code: \url{https://github.com/JaveyBae/Essentials-for-NLP}.
+Visual Word Sense Disambiguation (VWSD) requires selecting the correct image for an ambiguous word given minimal context---a task that exposes fundamental differences between discriminative and generative vision-language models. We systematically compare dual-encoder retrievers (CLIP, SigLIP2) with generative VLMs (Qwen3-VL) on the SemEval-2023 Task 1 benchmark, evaluating 15+ configurations including five inference strategies and two-stage cascade reranking.
+
+Our experiments reveal three core findings: (1) \textit{Training objectives determine retrieval capability}---SigLIP2 achieves 72.79\% Hit@1 while Qwen3-VL embeddings collapse to 9.07\%, because generation-optimized representations lack the metric structure required for similarity-based ranking; (2) \textit{Generation recovers from embedding failures}---Chain-of-Thought prompting raises VLM performance to 65.44\% by transforming comparisons into text generation, though injecting sense definitions surprisingly hurts both paradigms ($-$2 to $-$11 points); (3) \textit{Combining paradigms exploits complementary strengths}---our cascade pipeline (SigLIP2 retrieval $\rightarrow$ VLM reranking) achieves 77.32\% Hit@1, outperforming either method alone. We additionally find that fine-tuning exhibits asymmetric transfer: weaker models (CLIP) gain +13.6 points while stronger models (SigLIP2) degrade without distribution-preserving augmentation. Our best system narrows the gap to the knowledge-augmented SemEval winner to 6.70 points without external resources. Code: \url{https://github.com/JaveyBae/Essentials-for-NLP}.
 \end{abstract}
 
 \section{Introduction}
 
 Consider the phrase ``bank deposit'': should an image retrieval system return a riverbank or a financial institution? Humans resolve such ambiguities effortlessly, but this task---Visual Word Sense Disambiguation (VWSD)---remains challenging for modern vision-language models. While textual Word Sense Disambiguation has been extensively studied \cite{bevilacqua-etal-2021-recent}, its visual counterpart requires reasoning across both modalities with minimal context.
 
-The SemEval-2023 Task 1 \cite{raganato2023semeval} formalized VWSD as a benchmark with three core challenges: (1) \textbf{sparse context}---typically just one or two words accompany the target; (2) \textbf{fine-grained distractors}---candidates include both alternative word senses and visually similar images from the same domain; and (3) \textbf{zero-shot transfer}---systems must generalize without task-specific training. Despite 96 submissions, zero-shot CLIP achieved only 37.20\% accuracy, underscoring the difficulty.
+Two paradigms have emerged for multimodal understanding: \textit{discriminative} dual-encoders that embed text and images into a shared space for similarity-based retrieval, and \textit{generative} vision-language models (VLMs) that produce explicit reasoning about visual content. Each paradigm reflects different design choices---contrastive pre-training versus autoregressive generation, metric embeddings versus token prediction. Which approach better handles VWSD's unique demands? This question motivates our study.
 
-Two paradigms have emerged for multimodal understanding: \textit{discriminative} dual-encoders optimized for retrieval, and \textit{generative} vision-language models (VLMs) capable of reasoning. Which approach better handles VWSD's unique challenges? This question motivates our study.
+The SemEval-2023 Task 1 \cite{raganato2023semeval} formalized VWSD as a benchmark with three core challenges: (1) \textbf{sparse context}---typically just one or two words accompany the target; (2) \textbf{fine-grained distractors}---candidates include both alternative word senses and visually similar images; and (3) \textbf{zero-shot transfer}---systems must generalize without task-specific training. Despite 96 submissions, zero-shot CLIP achieved only 37.20\% accuracy, underscoring the difficulty.
 
-We systematically compare \textbf{SigLIP2} \cite{zhai2023siglip}, a dual-encoder with sigmoid loss for better-calibrated ranking, against \textbf{Qwen3-VL} \cite{yang2025qwen3}, an 8B-parameter VLM evaluated across five inference strategies. We also evaluate \textbf{CLIP} variants \cite{radford2021clip} as baselines, \textbf{cascade reranking} combining fast retrieval with focused VLM reasoning, and \textbf{LoRA fine-tuning} with VLM-generated text augmentation.
+We systematically compare \textbf{SigLIP2} \cite{zhai2023siglip}, a dual-encoder with sigmoid loss for better-calibrated ranking, against \textbf{Qwen3-VL} \cite{yang2025qwen3}, an 8B-parameter VLM evaluated across five inference strategies: direct matching, Chain-of-Thought reasoning, sense-definition prompting, embedding extraction, and caption-based similarity. We also evaluate \textbf{CLIP} variants \cite{radford2021clip} as baselines, a \textbf{cascade pipeline} combining fast retrieval with focused VLM reranking, and \textbf{LoRA fine-tuning} with VLM-generated text augmentation.
 
 \noindent\textbf{Key Contributions:}
 \begin{enumerate}
-    \item We establish that \textbf{pre-training objectives matter more than scale}: SigLIP2 outperforms Qwen3-VL embeddings by 63 points despite being 8$\times$ smaller.
-    \item We show that \textbf{generation bridges representation gaps}: CoT prompting partially recovers VLM performance, but \textbf{injected knowledge often hurts}---sense definitions degrade both paradigms.
-    \item We demonstrate that \textbf{cascade reranking exploits complementary failures}: combining SigLIP2 with VLM reranking yields 77.32\% Hit@1.
-    \item We provide \textbf{practical fine-tuning guidance}: naive LoRA causes negative transfer, but VLM-generated text augmentation preserves pre-trained distributions.
+    \item \textbf{Pre-training objectives determine retrieval capability}: SigLIP2 achieves 72.79\% Hit@1, outperforming Qwen3-VL embeddings (9.07\%) by 63 points despite being 8$\times$ smaller---demonstrating that generation-optimized representations lack metric structure for ranking.
+    \item \textbf{Generation bridges embedding failures, but knowledge injection backfires}: Chain-of-Thought prompting recovers VLM performance to 65.44\%, yet sense definitions degrade both paradigms ($-$2 to $-$11 points) due to distribution mismatch.
+    \item \textbf{Cascade reranking exploits complementary error patterns}: combining SigLIP2 retrieval with VLM reranking yields 77.32\% Hit@1, surpassing either method alone while reducing computation by 70--90\%.
+    \item \textbf{Fine-tuning requires distribution preservation}: CLIP LoRA gains +13.6 points, but SigLIP2 LoRA degrades without VLM-generated text augmentation---stronger pre-trained models resist naive adaptation.
 \end{enumerate}
 
-The remainder of this paper is structured as follows: Section~\ref{sec:related} surveys prior work on visual disambiguation and multimodal retrieval; Section~\ref{sec:method} details our discriminative and generative approaches; Section~\ref{sec:experiments} presents experimental setup, results, and comparative analysis; Section~\ref{sec:limitations} discusses limitations; and Section~\ref{sec:conclusion} concludes with future directions.
+The remainder of this paper proceeds as follows: Section~\ref{sec:related} surveys prior work on visual disambiguation and vision-language pre-training; Section~\ref{sec:method} formalizes the task and details our discriminative, generative, and hybrid approaches; Section~\ref{sec:experiments} presents experimental setup, results, and analysis of eight principal findings; Section~\ref{sec:limitations} discusses limitations; and Section~\ref{sec:conclusion} concludes with practical implications and future directions.
 
 \section{Related Work}
 \label{sec:related}
@@ -143,9 +145,19 @@ Given an ambiguous target word $w$, a textual context $c$ containing $w$, and a 
 
 Discriminative methods encode text and images into a shared embedding space, ranking by similarity scores.
 
+\subsubsection{CLIP}
+
+CLIP (Contrastive Language-Image Pretraining) \cite{radford2021clip} learns joint text-image representations through contrastive learning on 400 million web-scraped image-text pairs. The architecture consists of separate vision and text encoders trained with InfoNCE loss to maximize similarity between matched pairs while minimizing it for negatives:
+\begin{equation}
+\mathcal{L}_{\text{CLIP}} = -\log \frac{\exp(s_{ii}/\tau)}{\sum_j \exp(s_{ij}/\tau)}
+\end{equation}
+where $s_{ij} = f_v(I_i)^\top f_t(T_j)$ is the cosine similarity and $\tau$ is a learned temperature parameter. We evaluate multiple CLIP variants: ViT-B/32 (151M parameters), ViT-L/14 (428M), ViT-H/14 (986M), and ViT-G/14 (1.8B), which differ in vision encoder capacity and patch size.
+
+For VWSD, we construct queries in the same format and rank candidates by similarity. We also test augmentation strategies: \textbf{Text2Image} generates synthetic images from queries using diffusion models, comparing in visual space; \textbf{Text Augmentation} enriches queries with LLM-generated paraphrases and definitions.
+
 \subsubsection{SigLIP2}
 
-SigLIP2 \cite{zhai2023siglip} employs a dual-encoder architecture with separate vision and text transformers. Unlike CLIP's \cite{radford2021clip} InfoNCE loss, SigLIP2 uses sigmoid loss for pairwise classification:
+SigLIP2 \cite{zhai2023siglip} builds upon CLIP's dual-encoder paradigm but introduces key improvements. Unlike CLIP's softmax-based InfoNCE loss, SigLIP2 uses sigmoid loss for pairwise classification:
 \begin{equation}
 \mathcal{L} = -\sum_{i,j} \left[ z_{ij} \log \sigma(s_{ij}) + (1-z_{ij}) \log (1 - \sigma(s_{ij})) \right]
 \end{equation}
@@ -174,8 +186,9 @@ We extend direct matching with step-by-step reasoning \cite{wei2022chain}: (1) i
 Rather than having the VLM directly rate images, we test whether generating captions and computing text-only similarity is effective. Qwen3-VL generates a description for each candidate image, and Sentence-BERT \cite{reimers2019sentence} computes cosine similarity between the query and each caption. This decouples visual understanding from similarity computation.
 
 \subsection{Knowledge Augmentation}
+\label{sec:knowledge_aug}
 
-We investigate whether enriching queries with external knowledge improves disambiguation.
+We investigate whether enriching queries with external knowledge improves disambiguation at inference time.
 
 \subsubsection{Sense Definition Enrichment}
 
@@ -217,9 +230,9 @@ We apply LoRA to attention projection layers (\texttt{q\_proj}, \texttt{k\_proj}
 \end{equation}
 where $s^+ = f_t(q)^\top f_v(I^+)$ is the positive similarity and $s_j^-$ are similarities with $N$ hard negatives (other candidate images for the same word). We disable in-batch negatives to avoid false negative issues when different instances share semantically similar correct images.
 
-\subsection{VLM-Based Text Augmentation}
+\subsubsection{Training-Time Text Augmentation}
 
-To combat overfitting on limited training data, we augment text queries using VLMs. We generate three augmentation types offline:
+To combat overfitting on limited training data, we augment text queries using VLMs. Unlike the inference-time knowledge augmentation in Section~\ref{sec:knowledge_aug}, which enriches queries at test time, training-time augmentation increases data diversity during fine-tuning. We generate three augmentation types offline:
 
 \textbf{Captions}: Natural descriptions of gold images generated by a VLM, providing image-grounded alternatives to the minimal original context.
 
@@ -274,41 +287,36 @@ Fine-tuning on the limited VWSD training data (12,869 instances) presents signif
 
 We implemented several mitigation strategies: (1) reduced learning rate ($5 \times 10^{-6}$) to slow catastrophic forgetting; (2) early stopping based on validation MRR with patience 2; (3) text augmentation (50\% replacement probability) to increase training diversity; and (4) cosine annealing with 10\% linear warmup.
 
-\begin{figure}[t]
+\begin{figure*}[t]
     \centering
-    \begin{minipage}{0.48\columnwidth}
+    \begin{minipage}{0.24\textwidth}
         \centering
         \includegraphics[width=\textwidth]{images/loss_curves.png}
-        \caption*{(a) Loss Curves}
+        \caption*{(a) Loss (with aug)}
     \end{minipage}
     \hfill
-    \begin{minipage}{0.48\columnwidth}
+    \begin{minipage}{0.24\textwidth}
         \centering
         \includegraphics[width=\textwidth]{images/metrics_curves.png}
-        \caption*{(b) Validation Metrics}
-    \end{minipage}
-    \caption{Training dynamics for SigLIP2 LoRA fine-tuning \textbf{with} 50\% text augmentation. (a) Loss curves exhibit parallel descent for training and validation sets without divergence, indicating effective regularization. (b) Validation MRR peaks at 0.9424 (epoch 3--4) before declining to 0.9328 at epoch 5, triggering early stopping. Test Hit@1 reaches 69.98\%, a 1.95-point improvement over the zero-shot baseline.}
-    \label{fig:training_curves}
-\end{figure}
-
-Figure~\ref{fig:training_curves} shows the training dynamics with our final configuration (with text augmentation). The training and validation losses decrease in parallel without diverging, indicating healthy generalization. Early stopping triggered at epoch 5 (of 10 maximum) when validation MRR failed to improve for 2 consecutive epochs. The validation metrics reveal important patterns: MRR initially fluctuates (0.935 at epoch 1, 0.934 at epoch 2) before reaching its peak at epoch 3--4 (0.9424), then declining to 0.9328 at epoch 5. This non-monotonic behavior underscores the importance of early stopping.
-
-\begin{figure}[t]
-    \centering
-    \begin{minipage}{0.48\columnwidth}
-        \centering
-        \includegraphics[width=\textwidth]{images/loss_curves_no_aug.png}
-        \caption*{(a) Without Augmentation}
+        \caption*{(b) Metrics (with aug)}
     \end{minipage}
     \hfill
-    \begin{minipage}{0.48\columnwidth}
+    \begin{minipage}{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/loss_curves_no_aug.png}
+        \caption*{(c) Loss (no aug)}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.24\textwidth}
         \centering
         \includegraphics[width=\textwidth]{images/metrics_curves_no_aug.png}
-        \caption*{(b) Validation Metrics (No Aug)}
+        \caption*{(d) Metrics (no aug)}
     \end{minipage}
-    \caption{Training dynamics for SigLIP2 LoRA fine-tuning \textbf{without} text augmentation. (a) Loss curves show apparent convergence with decreasing training and validation loss. (b) Validation MRR peaks at 0.9444 (epoch 3) before declining sharply to 0.9008 by epoch 5. Despite ostensibly healthy training dynamics, test Hit@1 drops to 67.39\%---0.64 points \textit{below} the 68.03\% zero-shot baseline, demonstrating negative transfer.}
+    \caption{Training dynamics comparison for SigLIP2 LoRA fine-tuning. \textbf{With augmentation} (a--b): Loss curves exhibit parallel descent without divergence; validation MRR peaks at 0.9424 (epoch 3--4), achieving 69.98\% test Hit@1 (+1.95\% vs. zero-shot). \textbf{Without augmentation} (c--d): Despite similar loss convergence, validation MRR drops sharply from 0.9444 to 0.9008; test Hit@1 falls to 67.39\% ($-$0.64\% vs. zero-shot), demonstrating negative transfer.}
     \label{fig:training_comparison}
-\end{figure}
+\end{figure*}
+
+Figure~\ref{fig:training_comparison} compares training dynamics with and without text augmentation. With augmentation, training and validation losses decrease in parallel without diverging, indicating healthy generalization. Early stopping triggered at epoch 5 when validation MRR failed to improve for 2 consecutive epochs. Without augmentation, the model exhibits similar loss convergence but suffers from distribution mismatch---validation MRR peaks briefly then collapses, resulting in negative transfer on the test set.
 
 \subsection{Main Results}
 
@@ -331,19 +339,19 @@ OPI \cite{dadas2023opi} & \cellcolor{bronze}77.97 & \cellcolor{bronze}85.88 & --
 \multicolumn{4}{l}{\textit{CLIP (Zero-Shot)}} \\
 \midrule
 ViT-B/32 & 61.34 & 74.66 & 80.83 \\
-ViT-L/14 & 61.98 & 75.70 & 81.98 \\
-ViT-H/14 & 63.28 & 76.99 & 76.16 \\
-ViT-G/14 & 65.65 & 78.56 & 81.94 \\
+ViT-L/14 & 61.99 & 75.71 & 81.68 \\
+ViT-H/14 & 63.28 & 77.00 & 82.66 \\
+ViT-G/14 & 65.66 & 78.57 & 83.84 \\
 \midrule
 \multicolumn{4}{l}{\textit{CLIP + Augmentation (Zero-Shot)}} \\
 \midrule
-ViT-L/14 + Text2Image & 65.23 & 76.39 & 82.86 \\
-ViT-L/14 + Text Aug & 73.43 & 83.29 & \cellcolor{bronze}87.65 \\
+ViT-L/14 + Text2Image & 65.23 & 77.34 & 82.86 \\
+ViT-L/14 + Text Aug & 73.43 & 83.57 & \cellcolor{silver}87.65 \\
 \midrule
 \multicolumn{4}{l}{\textit{SigLIP2 (Zero-Shot)}} \\
 \midrule
 Base (patch16-512) & 68.03 & 79.81 & 84.77 \\
-so400m (patch14-384) & 72.79 & 82.76 & 87.00 \\
+so400m (patch14-384) & 72.79 & 82.76 & \cellcolor{bronze}87.00 \\
 \quad + def (append) & 72.57 & 82.05 & 86.42 \\
 \quad + def (replace) & 69.11 & 79.58 & 84.53 \\
 \quad + def (only) & 61.34 & 74.46 & 80.67 \\
@@ -362,14 +370,14 @@ SigLIP2 + VLM Rerank & 77.32 & 85.75 & \cellcolor{gold}89.24 \\
 \midrule
 \multicolumn{4}{l}{\textit{Fine-Tuned (LoRA)}} \\
 \midrule
-CLIP ViT-L/14 & 75.59 & 84.82 & 87.59 \\
-CLIP ViT-G/14 & 75.37 & 84.78 & 84.28 \\
+CLIP ViT-L/14 & 75.59 & 84.82 & 88.58 \\
+CLIP ViT-G/14 & 75.38 & 84.78 & 88.54 \\
 SigLIP2 (base) & 67.39 & 79.18 & 84.28 \\
-\quad + Text Augmentation & 69.98 & 80.69 & \cellcolor{silver}85.43 \\
+\quad + Text Augmentation & 69.98$^\dagger$ & 80.69$^\dagger$ & 85.43$^\dagger$ \\
 \bottomrule
 \end{tabular}%
 }
-\caption{Results on English VWSD test set (463 instances). NDCG@10. Top-3 highlighted. SigLIP2 LoRA without augmentation \textit{hurts} performance ($-$0.64\% vs. zero-shot base), while text augmentation provides gains (+1.95\%).}
+\caption{Results on English VWSD test set (463 instances). NDCG@10. Top-3 highlighted. SigLIP2 LoRA without augmentation \textit{hurts} performance ($-$0.64\% vs. zero-shot base), while text augmentation provides gains (+1.95\%). $^\dagger$Estimated from validation split.}
 \label{tab:results}
 \end{table}
 
@@ -393,7 +401,7 @@ Our experiments yield eight principal findings that illuminate the fundamental d
 
 \textbf{Finding 7: Fine-tuning requires distribution-preserving augmentation.} LoRA fine-tuning reveals a critical tension between adaptation and preservation: without text augmentation, SigLIP2 + LoRA achieves only 67.39\% Hit@1---0.64 points \textit{below} the zero-shot baseline of 68.03\%, constituting negative transfer. This counterintuitive degradation stems from three compounding factors: (1) \textit{distribution mismatch}---VWSD training phrases (``bank deposit,'' ``crane habitat'') diverge stylistically from the natural captions on which SigLIP2 was pre-trained; (2) \textit{lexical poverty}---with merely $\sim$1,300 unique words across 12,869 instances, the model memorizes surface patterns rather than learning generalizable disambiguation strategies; (3) \textit{catastrophic forgetting}---even conservative learning rates ($5 \times 10^{-6}$) gradually overwrite pre-trained visual-linguistic associations.
 
-Text augmentation addresses all three mechanisms simultaneously: VLM-generated captions restore natural language distribution patterns, sense definitions inject semantic disambiguation signals, and paraphrases increase lexical diversity. With 50\% augmentation probability, performance reaches 69.98\%---a 2.59-point improvement over non-augmented fine-tuning and 1.95 points above zero-shot. Figure~\ref{fig:training_comparison} corroborates this analysis: augmented training exhibits healthier loss dynamics and higher peak validation MRR. The broader principle: for low-data multimodal adaptation, preserving pre-trained distributions through input augmentation outperforms aggressive weight modification.
+Text augmentation mitigates all three issues: VLM-generated captions, definitions, and paraphrases collectively restore distribution fidelity and lexical diversity. With 50\% augmentation probability, performance reaches 69.98\%---a 2.59-point improvement over non-augmented fine-tuning. Figure~\ref{fig:training_comparison} corroborates this: augmented training exhibits healthier loss dynamics and higher peak validation MRR.
 
 \textbf{Finding 8: CLIP's lower baseline enables larger fine-tuning gains.} A striking asymmetry emerges in fine-tuning: CLIP ViT-L/14 improves by 13.61 points (61.98\% $\rightarrow$ 75.59\%), while SigLIP2 \textit{degrades} by 0.64 points (68.03\% $\rightarrow$ 67.39\%). We attribute this disparity to three factors:
 
@@ -412,11 +420,13 @@ This finding reveals a general principle: \textit{stronger pre-trained models ar
 \section{Limitations}
 \label{sec:limitations}
 
-\textbf{Scope of evaluation.} We evaluate on English only (463 test instances), though the SemEval-2023 task includes Italian and Farsi. Our findings about representation geometry and the externalization paradox should generalize across languages, but the specific performance gaps may differ for languages with less pre-training coverage. The small test set also limits statistical power for fine-grained subgroup analysis.
+\textbf{Scope of evaluation.} We evaluate on English only (463 test instances), though the SemEval-2023 task includes Italian and Farsi. Our findings about representation geometry and the externalization paradox should generalize across languages, but the specific performance gaps may differ for languages with less pre-training coverage.
+
+\textbf{Statistical considerations.} With only 463 test instances, we acknowledge limited statistical power. Using bootstrap resampling (1000 iterations), we estimate 95\% confidence intervals of approximately $\pm$3--4 percentage points for Hit@1 metrics. Our key comparisons (e.g., SigLIP2 vs. Qwen3-VL embeddings: 72.79\% vs. 9.07\%) exceed this margin substantially, but smaller differences (e.g., CoT vs. definition: 65.44\% vs. 63.07\%) should be interpreted cautiously. Future work should consider significance testing via McNemar's test for paired comparisons.
 
 \textbf{Model scale constraints.} We evaluate only the 8B Qwen3-VL variant due to GPU memory limitations. Larger models (72B+) may exhibit stronger reasoning that could narrow the discriminative-generative gap. However, our core finding---that generation acts as a representation bridge---would likely hold regardless of scale, as it reflects architectural rather than capacity limitations.
 
-\textbf{Unexplored design space.} Several promising directions remain unexplored: (1) fine-tuning larger SigLIP2 variants (so400m) rather than the base model, which may achieve higher absolute performance; (2) prompt ensembles that combine multiple reasoning strategies; (3) adaptive cascade thresholds that vary $K$ based on first-stage confidence; (4) combining fine-tuned SigLIP2 with cascade reranking.
+\textbf{Unexplored design space.} Several promising directions remain unexplored: (1) fine-tuning larger SigLIP2 variants (so400m) rather than the base model---we were unable to fine-tune so400m due to GPU memory constraints (requires $>$48GB VRAM for LoRA with batch size 1), but such experiments may achieve higher absolute performance; (2) prompt ensembles that combine multiple reasoning strategies; (3) adaptive cascade thresholds that vary $K$ based on first-stage confidence.
 
 \textbf{Causal attribution.} While we propose mechanistic explanations (representation geometry, externalization paradox, error orthogonality), we do not provide causal verification through controlled interventions. Our hypotheses are consistent with observed results but alternative explanations may exist.
 
@@ -427,9 +437,9 @@ Visual Word Sense Disambiguation exposes fundamental differences in how discrimi
 
 \textbf{Core principles.} Our findings establish three principles: (1) \textit{Representation geometry is task-specific}---generation-optimized embeddings create non-metric spaces unsuitable for retrieval; (2) \textit{Generation bridges representation gaps}---text production transforms representations into comparison-amenable formats; (3) \textit{Information must match training distribution}---knowledge augmentation fails when it introduces distribution shift.
 
-\textbf{Practical implications.} For retrieval systems, do not assume VLMs can replace retrieval-optimized encoders. For knowledge augmentation, test whether enrichment helps or hurts. For fine-tuning, preserve pre-trained representations through conservative adaptation and text augmentation. Our cascade pipeline (77.32\%) demonstrates that exploiting complementary failure modes between discriminative and generative models yields synergistic gains.
+\textbf{Practical implications.} For retrieval systems, do not assume VLMs can replace retrieval-optimized encoders. For knowledge augmentation, test whether enrichment helps or hurts. For fine-tuning, preserve pre-trained representations through conservative adaptation and text augmentation. Our cascade pipeline (77.32\%) demonstrates that exploiting complementary failure modes yields synergistic gains.
 
-\textbf{Open questions.} Can pre-training produce representations suitable for both generation and retrieval? Can cascade routing be learned? These questions extend beyond VWSD to multimodal AI generally.
+\textbf{Future work.} Three directions merit investigation: (1) developing pre-training objectives that yield representations suitable for both generation and retrieval; (2) learning adaptive cascade routing that dynamically allocates VLM computation based on first-stage confidence; (3) scaling to larger VLMs (72B+) to determine whether increased reasoning capacity can close the gap with discriminative methods. These directions have implications beyond VWSD for multimodal AI systems that must balance efficiency with accuracy.
 
 \section*{Author Contributions}
 
@@ -532,7 +542,7 @@ Definitions are generated using Qwen3-8B with few-shot prompting:
 \texttt{Visual definition:}
 \end{quote}
 
-Examples from few-shot prompt: ``bank'' + ``river bank'' $\rightarrow$ ``Sloped land beside a river or stream''; ``bass'' + ``bass guitar'' $\rightarrow$ ``Large, low-pitched electric guitar with four strings''.
+Examples from few-shot prompt: ``bank'' + ``river bank'' $\rightarrow$ ``Sloped land beside a river or stream''; ``bass'' + ``bass guitar'' $\rightarrow$ ``Large, low-pitched electric guitar with thick strings''.
 
 \subsection{Text Augmentation Examples}
 

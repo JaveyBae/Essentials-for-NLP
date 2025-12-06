@@ -224,7 +224,9 @@ Both experiments use identical hyperparameters (lr=5e-6, dropout=0.1, early stop
 |---------|-------|-----|---------|-------|
 | Zero-shot (base) | 68.03% | 79.81 | 84.77 | No fine-tuning |
 | Without Augmentation | 67.39% | 79.18 | 84.28 | **Negative transfer** (−0.64%) |
-| With Augmentation | 69.98% | 80.69 | 85.43 | **+1.95% improvement** |
+| With Augmentation | 69.98%* | 80.69* | 85.43* | **+1.95% improvement** |
+
+*Estimated from validation split performance; test evaluation pending.
 
 See [finetune/README.md](finetune/README.md) for detailed documentation.
 
@@ -275,31 +277,33 @@ Results on English VWSD test set (463 instances):
 | Category | Method | Hit@1 | MRR | NDCG@10 |
 |----------|--------|-------|-----|---------|
 | **Hybrid** | **Cascade (SigLIP2 + VLM Rerank top-5)** | **77.32%** | **85.75** | **89.24** |
-| **Fine-tuned** | CLIP ViT-L/14 LoRA | 75.59% | 84.82 | 87.59 |
-| | CLIP ViT-G/14 LoRA | 75.37% | 84.78 | 84.28 |
-| **Augmentation** | CLIP ViT-L/14 + Text Aug | 73.43% | 83.29 | 87.65 |
+| **Fine-tuned** | CLIP ViT-L/14 LoRA | 75.59% | 84.82 | 88.58 |
+| | CLIP ViT-G/14 LoRA | 75.38% | 84.78 | 88.54 |
+| **Augmentation** | CLIP ViT-L/14 + Text Aug | 73.43% | 83.57 | 87.65 |
 | **SigLIP2** | so400m (zero-shot) | 72.79% | 82.76 | 87.00 |
 | | + def (append) | 72.57% | 82.05 | 86.42 |
 | | + def (replace) | 69.11% | 79.58 | 84.53 |
-| **Fine-tuned** | SigLIP2 Base + LoRA + Text Aug | 69.98% | 80.69 | 85.43 |
+| **Fine-tuned** | SigLIP2 Base + LoRA + Text Aug | 69.98%* | 80.69* | 85.43* |
 | **SigLIP2** | Base (zero-shot) | 68.03% | 79.81 | 84.77 |
 | **Fine-tuned** | SigLIP2 Base + LoRA (no aug) | 67.39% | 79.18 | 84.28 |
-| **CLIP** | ViT-G/14 (zero-shot) | 65.65% | 78.56 | 81.94 |
+| **CLIP** | ViT-G/14 (zero-shot) | 65.66% | 78.57 | 83.84 |
 | **Qwen3-VL** | + CoT | 65.44% | 77.98 | 83.36 |
-| **Augmentation** | CLIP ViT-L/14 + Text-to-Image | 65.23% | 76.39 | 82.86 |
-| **CLIP** | ViT-H/14 (zero-shot) | 63.28% | 76.99 | 76.16 |
+| **Augmentation** | CLIP ViT-L/14 + Text-to-Image | 65.23% | 77.34 | 82.86 |
+| **CLIP** | ViT-H/14 (zero-shot) | 63.28% | 77.00 | 82.66 |
 | **Qwen3-VL** | + Sense Def | 63.07% | 74.89 | 80.88 |
-| **CLIP** | ViT-L/14 (zero-shot) | 61.98% | 75.70 | 81.98 |
+| **CLIP** | ViT-L/14 (zero-shot) | 61.99% | 75.71 | 81.68 |
 | **Qwen3-VL** | Direct Matching | 61.77% | 75.93 | 81.83 |
 | **CLIP** | ViT-B/32 (zero-shot) | 61.34% | 74.66 | 80.83 |
 | **SigLIP2** | + def (only) | 61.34% | 74.46 | 80.67 |
 | **Qwen3-VL** | Caption → SBERT | 48.60% | 65.10 | 73.52 |
 | | Embedding | 9.07% | 29.31 | 45.51 |
 
+*Estimated from validation split performance; test evaluation pending.
+
 **Key findings:**
 - **Cascade reranking** achieves best results (77.32% Hit@1) by combining SigLIP2 speed with VLM reasoning
 - **SigLIP2** outperforms CLIP variants by ~7-11 points due to sigmoid loss optimization
-- **Text augmentation** with Gemini-generated rewrites boosts CLIP from 61.98% to 73.43% (+11.45 points)
+- **Text augmentation** with Gemini-generated rewrites boosts CLIP from 61.99% to 73.43% (+11.44 points)
 - **LoRA fine-tuning** without augmentation causes negative transfer (−0.64%), but text augmentation recovers gains (+1.95%)
 - **Knowledge augmentation** (sense definitions) hurts SigLIP2 performance due to distribution mismatch
 - **VLM embeddings** fail catastrophically (9.07%) as generation-optimized representations are non-metric
@@ -347,6 +351,10 @@ Results on English VWSD test set (463 instances):
 │   └── text_augmentations/          # Cached text augmentations
 ├── report/                           # LaTeX report (ACL format)
 │   └── latex/                       # Final report source
+├── vwsd_utils/                       # Legacy CLIP utilities
+│   ├── embedding_clip.py            # CLIP embedding extraction
+│   ├── image_evaluator.py           # Image evaluation utilities
+│   └── plot.py                      # Visualization helpers
 └── main.py                           # Entry point for all experiments
 ```
 
@@ -366,11 +374,11 @@ Results on English VWSD test set (463 instances):
 
 ## Authors
 
-| Name             | GitHub |
-|------------------|--------|
-| Rui Zhou         | [![GitHub](https://img.shields.io/github/followers/RuiZhou-cn?label=Follow&style=social)](https://github.com/RuiZhou-cn) |
-| Jiawei Pei       | [![GitHub](https://img.shields.io/github/followers/JaveyBae?label=Follow&style=social)](https://github.com/JaveyBae) |
-| Nilaksan Selliah | [![GitHub](https://img.shields.io/github/followers/nilaksan97?label=Follow&style=social)](https://github.com/nilaksan97) |
+| Name | GitHub |
+|------|--------|
+| Rui Zhou | [![GitHub](https://img.shields.io/github/followers/RuiZhou-cn?label=Follow&style=social)](https://github.com/RuiZhou-cn) |
+| Jiawei Pei | [![GitHub](https://img.shields.io/github/followers/JaveyBae?label=Follow&style=social)](https://github.com/JaveyBae) |
+| Nilaksan Sandrakumar | [![GitHub](https://img.shields.io/github/followers/nilaksan97?label=Follow&style=social)](https://github.com/nilaksan97) |
 
 ## License
 

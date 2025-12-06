@@ -3,7 +3,7 @@ Pillow>=10.0.0
 numpy>=1.24.0
 
 # PyTorch 2.9+ - Install separately for CUDA 12.8 support
-# Run: pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# Run: pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Transformers - Required for both SigLIP2 and Qwen3-VL
 transformers>=4.57.0      # SigLIP2 + Qwen3-VL models
