@@ -104,24 +104,55 @@ python main.py --cascade --topk 3 --siglip2-model siglip2-giant-opt-patch16-384 
 ### Fine-tuning SigLIP2
 
 ```bash
-# LoRA fine-tuning with early stopping (recommended)
-python finetune/train_siglip2_lora.py --lr 5e-6 --epochs 10 --early-stopping --early-stopping-patience 2 --val-split 0.05
+# Without augmentation (baseline)
+python finetune/train_siglip2_lora.py \
+    --lr 5e-6 \
+    --lora-dropout 0.1 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2 \
+    --val-split 0.05
 
 # With text augmentation (reduces overfitting)
-python finetune/train_siglip2_lora.py --augmentation-file results/text_augmentations/train_en_augmentations_index.json --aug-prob 0.5 --aug-types caption definition --lr 5e-6 --epochs 10 --early-stopping --early-stopping-patience 2 --val-split 0.05
+python finetune/train_siglip2_lora.py \
+    --augmentation-file results/text_augmentations/train_en_augmentations_index.json \
+    --aug-prob 0.5 \
+    --aug-types caption definition \
+    --lr 5e-6 \
+    --lora-dropout 0.1 \
+    --epochs 10 \
+    --early-stopping \
+    --early-stopping-patience 2 \
+    --val-split 0.05
 
 # Generate augmentations first (one-time, ~4 hours)
 python finetune/generate_augmentations.py --type all
 ```
 
-**Key fine-tuning options:**
-| Option | Recommended | Description |
-|--------|-------------|-------------|
+**Exact training parameters used:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
 | `--lr` | `5e-6` | Lower LR prevents catastrophic forgetting |
-| `--early-stopping` | on | Stop when validation MRR stops improving |
-| `--early-stopping-patience` | 2 | Epochs to wait before stopping |
-| `--val-split` | 0.05 | Hold out 5% for validation loss curves |
-| `--aug-prob` | 0.5 | 50% chance to use augmented text |
+| `--lora-dropout` | `0.1` | Dropout for LoRA layers (regularization) |
+| `--epochs` | `10` | Maximum training epochs |
+| `--early-stopping` | enabled | Stop when validation MRR stops improving |
+| `--early-stopping-patience` | `2` | Epochs to wait before stopping |
+| `--val-split` | `0.05` | Hold out 5% for validation |
+
+**Augmentation-specific parameters:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `--aug-prob` | `0.5` | 50% chance to use augmented text |
+| `--aug-types` | `caption definition` | Use VLM captions and sense definitions |
+
+**Comparison: With vs Without Augmentation**
+
+Both experiments use identical hyperparameters (lr=5e-6, dropout=0.1, early stopping with patience=2). The only difference is augmentation.
+
+| Setting | Hit@1 | MRR | Notes |
+|---------|-------|-----|-------|
+| Without Augmentation | TBD | TBD | Baseline LoRA fine-tuning |
+| With Augmentation | TBD | TBD | +caption/definition augmentation |
 
 See [finetune/README.md](finetune/README.md) for detailed documentation.
 
