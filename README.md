@@ -366,11 +366,11 @@ Results on English VWSD test set (463 instances):
 
 ## Authors
 
-| Name | GitHub |
-|------|--------|
-| Rui Zhou | [![GitHub](https://img.shields.io/github/followers/RuiZhou-cn?label=Follow&style=social)](https://github.com/RuiZhou-cn) |
-| Jiawei Pei | [![GitHub](https://img.shields.io/github/followers/JaveyBae?label=Follow&style=social)](https://github.com/JaveyBae) |
-| Nilaksan Sandrakumar | [![GitHub](https://img.shields.io/github/followers/nilaksan97?label=Follow&style=social)](https://github.com/nilaksan97) |
+| Name             | GitHub |
+|------------------|--------|
+| Rui Zhou         | [![GitHub](https://img.shields.io/github/followers/RuiZhou-cn?label=Follow&style=social)](https://github.com/RuiZhou-cn) |
+| Jiawei Pei       | [![GitHub](https://img.shields.io/github/followers/JaveyBae?label=Follow&style=social)](https://github.com/JaveyBae) |
+| Nilaksan Selliah | [![GitHub](https://img.shields.io/github/followers/nilaksan97?label=Follow&style=social)](https://github.com/nilaksan97) |
 
 ## License
 
