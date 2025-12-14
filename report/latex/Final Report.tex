@@ -99,13 +99,7 @@ The SemEval-2023 Task 1 \cite{raganato2023semeval} formalized VWSD as a benchmar
 
 We systematically compare \textbf{SigLIP2} \cite{zhai2023siglip}, a dual-encoder with sigmoid loss for better-calibrated ranking, against \textbf{Qwen3-VL} \cite{yang2025qwen3}, an 8B-parameter VLM evaluated across five inference strategies: direct matching, Chain-of-Thought reasoning, sense-definition prompting, embedding extraction, and caption-based similarity. We also evaluate \textbf{CLIP} variants \cite{radford2021clip} as baselines, a \textbf{cascade pipeline} combining fast retrieval with focused VLM reranking, and \textbf{LoRA fine-tuning} with VLM-generated text augmentation.
 
-\noindent\textbf{Key Contributions:}
-\begin{enumerate}
-    \item \textbf{Pre-training objectives determine retrieval capability}: SigLIP2 achieves 72.79\% Hit@1, outperforming Qwen3-VL embeddings (9.07\%) by 63 points despite being 8$\times$ smaller---demonstrating that generation-optimized representations lack metric structure for ranking.
-    \item \textbf{Generation bridges embedding failures, but knowledge injection backfires}: Chain-of-Thought prompting recovers VLM performance to 65.44\%, yet sense definitions degrade both paradigms ($-$2 to $-$11 points) due to distribution mismatch.
-    \item \textbf{Cascade reranking exploits complementary error patterns}: combining SigLIP2 retrieval with VLM reranking yields 77.32\% Hit@1, surpassing either method alone while reducing computation by 70--90\%.
-    \item \textbf{Fine-tuning requires distribution preservation}: CLIP LoRA gains +13.6 points, but SigLIP2 LoRA degrades without VLM-generated text augmentation---stronger pre-trained models resist naive adaptation.
-\end{enumerate}
+\noindent\textbf{Key Contributions:} We demonstrate that pre-training objectives impose geometric constraints making VLM embeddings unsuitable for retrieval, while generation-based reasoning recovers this capability. External knowledge injection paradoxically degrades performance via distribution shift, but combining discriminative and generative paradigms through cascade reranking exploits complementary strengths. Our analysis reveals asymmetric fine-tuning behavior where stronger models require distribution-preserving augmentation to avoid negative transfer.
 
 The remainder of this paper proceeds as follows: Section~\ref{sec:related} surveys prior work on visual disambiguation and vision-language pre-training; Section~\ref{sec:method} formalizes the task and details our discriminative, generative, and hybrid approaches; Section~\ref{sec:experiments} presents experimental setup, results, and analysis of eight principal findings; Section~\ref{sec:limitations} discusses limitations; and Section~\ref{sec:conclusion} concludes with practical implications and future directions.
 
@@ -385,35 +379,63 @@ SigLIP2 (base) & 67.39 & 79.18 & 84.28 \\
 
 \subsection{Analysis and Discussion}
 
-Our experiments yield eight principal findings that illuminate the fundamental differences between discriminative and generative approaches for visual word sense disambiguation. Beyond reporting performance metrics, we analyze the mechanistic underpinnings that explain observed behaviors.
+Our experiments yield eight principal findings that illuminate fundamental differences between discriminative and generative approaches. We structure each finding as observation → mechanism → implication.
 
-\textbf{Finding 1: Optimization objectives determine representation geometry.} The 63-point gap between Qwen3-VL embeddings (9.07\%) and SigLIP2 (72.79\%) transcends mere ``retrieval-specific training''---it exposes a fundamental principle: \textit{pre-training objectives impose geometric constraints on learned representations}. SigLIP2's sigmoid loss enforces a metric space where cosine similarity directly encodes match probability, satisfying the triangle inequality essential for ranking. Qwen3-VL's autoregressive objective, conversely, optimizes for conditional probability estimation: representations encode predictive distributions over next tokens rather than pairwise relationships. This architectural distinction manifests as a catastrophic 63-point performance collapse when VLM embeddings are repurposed for retrieval---empirical evidence that generation-optimized representations inhabit fundamentally non-metric spaces. The implication extends beyond VWSD: any attempt to extract similarity judgments from generative model embeddings must account for this geometric incompatibility.
+\textbf{Finding 1: Optimization objectives determine representation geometry.}
+SigLIP2 achieves 72.79\% Hit@1 while Qwen3-VL embeddings collapse to 9.07\%---a 63-point gap that exposes a fundamental principle: \textit{pre-training objectives impose geometric constraints on learned representations}.
 
-\textbf{Finding 2: Generation circumvents embedding limitations.} When Qwen3-VL generates ratings rather than embeddings, performance improves from 9.07\% to 61.77\%---a 52.7-point recovery that reveals generation as a computational ``bridge'' between non-metric representations and similarity judgments. The generation process reroutes comparison through the model's language modeling head, which has learned to produce calibrated outputs despite operating on geometrically unsuitable embeddings. Chain-of-Thought reasoning amplifies this effect (+3.67 points to 65.44\%) by externalizing the disambiguation step: articulating ``the intended sense is X'' creates an explicit intermediate representation that anchors subsequent visual comparison. This finding suggests that VLMs possess latent retrieval capabilities inaccessible through embedding extraction---capabilities that emerge only when the task is reformulated as conditional generation.
+\textit{Mechanism:} SigLIP2's sigmoid loss enforces a metric space where cosine similarity encodes match probability, satisfying the triangle inequality essential for ranking. Qwen3-VL's autoregressive objective optimizes for next-token prediction, creating representations that encode conditional distributions rather than pairwise relationships. This architectural distinction manifests as catastrophic failure when VLM embeddings are repurposed for retrieval.
 
-\textbf{Finding 3: Self-generated knowledge outperforms injected knowledge.} Sense definitions (63.07\%) underperform CoT (65.44\%) despite conveying semantically equivalent disambiguation signals---a phenomenon we term the \textit{externalization paradox}. Externally provided information, though accurate, proves less effective than equivalent information the model generates during reasoning. We attribute this asymmetry to two mechanisms: (1) \textit{representational alignment}---self-generated interpretations employ the model's internal conceptual vocabulary, ensuring compatibility with its vision encoder's feature detectors, whereas external definitions may reference visual attributes the encoder cannot reliably extract; (2) \textit{attention coherence}---during CoT, cross-attention patterns emerge organically from the reasoning process, directing focus to task-relevant image regions, whereas injected definitions impose externally-determined attention targets that may misalign with the model's visual processing capabilities. This finding has practical implications: prompting models to reason explicitly may outperform knowledge injection strategies that appear more direct.
+\textit{Implication:} Generation-optimized representations inhabit non-metric spaces unsuitable for similarity-based ranking. Practitioners should not assume VLM embeddings can replace specialized retrieval encoders without accounting for this geometric incompatibility.
 
-\textbf{Finding 4: Knowledge augmentation induces distribution shift.} Definition enrichment degrades SigLIP2 performance by up to 11.45 points (from 72.79\% to 61.34\%), revealing that knowledge augmentation can introduce harmful distribution shift that outweighs its semantic benefits. During pre-training on natural image-caption pairs, dual-encoders learn implicit associations between specific linguistic patterns and visual features---associations that structured definitions disrupt. The query ``long-necked wading bird with gray plumage'' activates fundamentally different neural pathways than ``a crane in wetland,'' despite semantic equivalence, because the model has never encountered such clinical descriptions paired with images. Our error analysis identifies three failure modes: (1) \textit{semantic drift}---definitions introducing related but incorrect concepts (e.g., ``heron'' for ``crane''); (2) \textit{over-specification}---emphasizing visual details absent from candidate images; (3) \textit{context destruction}---discarding the dataset's minimal but disambiguating original context. This finding challenges the intuition that richer input invariably improves performance; for pre-trained models, distribution fidelity may matter more than information content.
+\textbf{Finding 2: Generation circumvents embedding limitations.}
+When Qwen3-VL generates ratings rather than embeddings, performance improves from 9.07\% to 61.77\%---a 52.7-point recovery. Chain-of-Thought reasoning amplifies this to 65.44\% (+3.67 points).
 
-\textbf{Finding 5: Verbalization creates an information bottleneck.} Caption-based similarity achieves only 48.60\% Hit@1---the lowest among all methods---exposing a fundamental limitation of text-mediated visual reasoning. This ``describe-then-match'' pipeline introduces a critical information bottleneck: the VLM must compress a 384$\times$384 image ($\sim$150K pixels) into 2--3 sentences ($\sim$50 tokens), inevitably discarding disambiguation-relevant visual details. The subsequent Sentence-BERT comparison operates in a text-only semantic space misaligned with visual content, compounding information loss. Visual disambiguation frequently depends on subtle features---object orientation, background context, spatial relationships, texture patterns---that resist verbalization. A riverbank and a financial institution may both be described as ``a building near water'' if the caption fails to capture distinguishing architectural details. Direct visual grounding, whether through learned embeddings or explicit image-conditioned ratings, preserves access to these features throughout the comparison process, explaining its consistent superiority.
+\textit{Mechanism:} Generation reroutes comparison through the language modeling head, which produces calibrated outputs despite operating on geometrically unsuitable embeddings. CoT externalizes disambiguation by articulating ``the intended sense is X,'' creating an explicit intermediate representation that anchors visual comparison.
 
-\textbf{Finding 6: Error orthogonality enables synergistic combination.} The cascade pipeline achieves 77.32\% Hit@1, surpassing both SigLIP2 (72.79\%) and Qwen3-VL CoT (65.44\%) individually---a 4.53-point improvement over the stronger component. This superadditive gain arises from \textit{error orthogonality}: the two systems fail on complementary subsets of instances. SigLIP2's failures cluster around cases dominated by pre-training frequency biases---``bank'' strongly associates with financial institutions regardless of context, causing systematic errors on ``river bank'' queries. Qwen3-VL's explicit reasoning can override such statistical biases through contextual inference. Conversely, Qwen3-VL produces poorly calibrated scores for cases requiring fine-grained visual discrimination (e.g., distinguishing crane species), where SigLIP2's retrieval-optimized embeddings excel. By restricting VLM reasoning to the top-5 candidates from SigLIP2, the cascade architecture concentrates expensive generative computation on genuinely ambiguous instances while preserving the discriminative model's advantage on clear-cut cases---achieving both accuracy gains and 70--90\% computational savings.
+\textit{Implication:} VLMs possess latent retrieval capabilities inaccessible through embedding extraction. These capabilities emerge when the task is reformulated as conditional generation rather than similarity computation.
 
-\textbf{Finding 7: Fine-tuning requires distribution-preserving augmentation.} LoRA fine-tuning reveals a critical tension between adaptation and preservation: without text augmentation, SigLIP2 + LoRA achieves only 67.39\% Hit@1---0.64 points \textit{below} the zero-shot baseline of 68.03\%, constituting negative transfer. This counterintuitive degradation stems from three compounding factors: (1) \textit{distribution mismatch}---VWSD training phrases (``bank deposit,'' ``crane habitat'') diverge stylistically from the natural captions on which SigLIP2 was pre-trained; (2) \textit{lexical poverty}---with merely $\sim$1,300 unique words across 12,869 instances, the model memorizes surface patterns rather than learning generalizable disambiguation strategies; (3) \textit{catastrophic forgetting}---even conservative learning rates ($5 \times 10^{-6}$) gradually overwrite pre-trained visual-linguistic associations.
+\textbf{Finding 3: Self-generated knowledge outperforms injected knowledge.}
+Sense definitions (63.07\%) underperform CoT (65.44\%) despite conveying semantically equivalent disambiguation signals---a phenomenon we term the \textit{externalization paradox}: externally provided information proves less effective than equivalent self-generated reasoning.
 
-Text augmentation mitigates all three issues: VLM-generated captions, definitions, and paraphrases collectively restore distribution fidelity and lexical diversity. With 50\% augmentation probability, performance reaches 69.98\%---a 2.59-point improvement over non-augmented fine-tuning. Figure~\ref{fig:training_comparison} corroborates this: augmented training exhibits healthier loss dynamics and higher peak validation MRR.
+\textit{Mechanism:} Two factors explain this asymmetry. (1) \textit{Representational alignment}---self-generated interpretations employ the model's internal vocabulary, ensuring compatibility with its vision encoder, whereas external definitions may reference attributes the encoder cannot extract. (2) \textit{Attention coherence}---CoT cross-attention patterns emerge organically from reasoning, directing focus to task-relevant regions, whereas injected definitions impose externally-determined targets that misalign with the model's processing.
 
-\textbf{Finding 8: CLIP's lower baseline enables larger fine-tuning gains.} A striking asymmetry emerges in fine-tuning: CLIP ViT-L/14 improves by 13.61 points (61.98\% $\rightarrow$ 75.59\%), while SigLIP2 \textit{degrades} by 0.64 points (68.03\% $\rightarrow$ 67.39\%). We attribute this disparity to three factors:
+\textit{Implication:} Prompting models to reason explicitly may outperform knowledge injection strategies that appear more direct. For VLMs, process matters as much as content.
 
-\begin{enumerate}
-    \item \textbf{Headroom hypothesis}: CLIP's weaker zero-shot performance (61.98\% vs. 68.03\%) leaves more room for task-specific adaptation. SigLIP2's stronger pre-trained representations already capture much of the visual-semantic alignment needed for VWSD, leaving less margin for improvement---and more risk of degradation through distribution shift.
+\textbf{Finding 4: Knowledge augmentation induces distribution shift.}
+Definition enrichment degrades SigLIP2 performance by up to 11.45 points (from 72.79\% to 61.34\%), revealing that knowledge augmentation can introduce harmful distribution shift outweighing its semantic benefits.
 
-    \item \textbf{Loss function sensitivity}: SigLIP2's sigmoid loss produces sharply calibrated similarity scores optimized for ranking, making its representations more brittle to perturbation. CLIP's softmax-based contrastive loss yields softer probability distributions that may be more amenable to fine-tuning without catastrophic disruption of the learned manifold geometry.
+\textit{Mechanism:} Dual-encoders learn implicit associations between linguistic patterns and visual features during pre-training. Structured definitions disrupt these associations---the query ``long-necked wading bird with gray plumage'' activates different neural pathways than ``a crane in wetland,'' despite semantic equivalence. Error analysis identifies three failure modes: (1) \textit{semantic drift}---introducing related but incorrect concepts (``heron'' for ``crane''); (2) \textit{over-specification}---emphasizing visual details absent from candidates; (3) \textit{context destruction}---discarding the dataset's minimal but disambiguating original context.
 
-    \item \textbf{Pre-training distribution alignment}: CLIP was trained on noisier web-scraped image-caption pairs (400M from WebImageText), while SigLIP2 was trained on cleaner, more curated data with emphasis on fine-grained visual-semantic correspondence. Paradoxically, CLIP's noisier pre-training may have produced more ``plastic'' representations that adapt better to downstream distribution shifts, whereas SigLIP2's specialized representations resist modification.
-\end{enumerate}
+\textit{Implication:} Richer input does not invariably improve performance. For pre-trained models, distribution fidelity may matter more than information content.
 
-This finding reveals a general principle: \textit{stronger pre-trained models are not always easier to fine-tune}. When base performance is already high, the risk of negative transfer increases because task-specific gradients compete with well-established representations. The practical implication is that fine-tuning strategies must be tailored to baseline strength---models with high zero-shot performance may benefit more from retrieval augmentation or prompt engineering than from weight modification.
+\textbf{Finding 5: Verbalization creates an information bottleneck.}
+Caption-based similarity achieves only 48.60\% Hit@1---the lowest among all methods---exposing a fundamental limitation of text-mediated visual reasoning.
+
+\textit{Mechanism:} The ``describe-then-match'' pipeline compresses a 384$\times$384 image ($\sim$150K pixels) into 2--3 sentences ($\sim$50 tokens), inevitably discarding disambiguation-relevant visual details. Subsequent Sentence-BERT comparison operates in a text-only semantic space misaligned with visual content, compounding information loss. Visual disambiguation depends on subtle features---object orientation, background context, spatial relationships, texture patterns---that resist verbalization. A riverbank and financial institution may both yield ``a building near water'' if the caption fails to capture distinguishing details.
+
+\textit{Implication:} Direct visual grounding (learned embeddings or image-conditioned ratings) preserves access to fine-grained features throughout comparison, explaining its consistent superiority over text-mediated approaches.
+
+\textbf{Finding 6: Error orthogonality enables synergistic combination.}
+The cascade pipeline achieves 77.32\% Hit@1, surpassing both SigLIP2 (72.79\%) and Qwen3-VL CoT (65.44\%) individually---a 4.53-point improvement over the stronger component.
+
+\textit{Mechanism:} This superadditive gain arises from \textit{error orthogonality}---the two systems fail on complementary subsets. SigLIP2's failures cluster around pre-training frequency biases (``bank'' associates with financial institutions regardless of context). Qwen3-VL's explicit reasoning overrides such statistical biases through contextual inference. Conversely, Qwen3-VL produces poorly calibrated scores for fine-grained visual discrimination (distinguishing crane species), where SigLIP2's retrieval-optimized embeddings excel. By restricting VLM reasoning to the top-5 candidates, the cascade concentrates expensive computation on genuinely ambiguous cases.
+
+\textit{Implication:} Combining discriminative and generative paradigms yields both accuracy gains (+4.53 points) and computational savings (70--90\% reduction) by exploiting complementary failure modes.
+
+\textbf{Finding 7: Fine-tuning requires distribution-preserving augmentation.}
+Without text augmentation, SigLIP2 + LoRA achieves only 67.39\% Hit@1---0.64 points \textit{below} the zero-shot baseline (68.03\%)---constituting negative transfer.
+
+\textit{Mechanism:} This counterintuitive degradation stems from three compounding factors. (1) \textit{Distribution mismatch}---VWSD training phrases (``bank deposit,'' ``crane habitat'') diverge stylistically from the natural captions on which SigLIP2 was pre-trained. (2) \textit{Lexical poverty}---with merely $\sim$1,300 unique words across 12,869 instances, the model memorizes surface patterns rather than learning generalizable strategies. (3) \textit{Catastrophic forgetting}---even conservative learning rates ($5 \times 10^{-6}$) gradually overwrite pre-trained associations. Text augmentation mitigates all three issues: VLM-generated captions, definitions, and paraphrases restore distribution fidelity and lexical diversity. With 50\% augmentation probability, performance reaches 69.98\% (+2.59 points). Figure~\ref{fig:training_comparison} shows augmented training exhibits healthier loss dynamics.
+
+\textit{Implication:} Stronger pre-trained models require careful adaptation. Preserving pre-trained distributions through augmentation is essential to avoid negative transfer.
+
+\textbf{Finding 8: CLIP's lower baseline enables larger fine-tuning gains.}
+CLIP ViT-L/14 improves by 13.61 points (61.98\% $\rightarrow$ 75.59\%), while SigLIP2 \textit{degrades} by 0.64 points (68.03\% $\rightarrow$ 67.39\%)---a striking asymmetry.
+
+\textit{Mechanism:} Three factors explain this disparity. (1) \textit{Headroom hypothesis}---CLIP's weaker zero-shot performance leaves more room for task-specific adaptation; SigLIP2's stronger representations already capture needed visual-semantic alignment, leaving less margin for improvement and more risk of degradation. (2) \textit{Loss function sensitivity}---SigLIP2's sigmoid loss produces sharply calibrated scores optimized for ranking, making representations brittle to perturbation; CLIP's softmax-based loss yields softer distributions more amenable to fine-tuning. (3) \textit{Pre-training distribution}---CLIP was trained on noisier web-scraped pairs (400M), while SigLIP2 used cleaner, curated data. Paradoxically, CLIP's noisier pre-training produced more ``plastic'' representations that adapt better to distribution shifts.
+
+\textit{Implication:} Stronger pre-trained models are not always easier to fine-tune. When base performance is high, negative transfer risk increases because task-specific gradients compete with well-established representations. Fine-tuning strategies must be tailored to baseline strength---high zero-shot models may benefit more from retrieval augmentation or prompt engineering than weight modification.
 
 \textbf{Gap to state-of-the-art.} Our cascade pipeline (77.32\% Hit@1) reduces the gap to the SemEval-2023 winner SRCB (84.02\%) to 6.70 percentage points---achieved without recourse to external knowledge bases. SRCB's remaining advantage derives from two sources: (1) retrieval augmentation from LAION-5B, providing additional visual training signals at inference time; and (2) structured knowledge from WordNet and BabelNet, enabling explicit sense enumeration. This analysis suggests two promising directions for further improvement: scaling inference-time retrieval to dynamically access relevant visual exemplars, or enhancing pre-training objectives to encode finer-grained sense-level distinctions. Architectural modifications alone appear to yield diminishing returns at this performance regime.
 
@@ -465,7 +487,7 @@ For the paper, Rui wrote the abstract, introduction, related work (Section~\ref{
     \item \textit{Text-to-image evaluation pipeline}: Implemented phrase-conditioned image generation and used it to assess CLIP encoders (ViT-L/14 and ViT-H/14) under synthetic visual variations, including a full refactoring of the evaluation codebase to compute pairwise image similarity for quantitative comparison.
 \end{itemize}
 
-For the paper, Jiawei contributed to the writing of the introduction, the reporting and analysis of results from the text-augmentation and text-to-image methods, the construction of appendix examples, and the verification and consolidation of bibliographic references.
+For the paper, Jiawei contributed to the writing of the introduction, the reporting and analysis of results from the text-augmentation and text-to-image methods (especially examples), the construction of appendix examples, and the verification and consolidation of bibliographic references.
 
 
 
@@ -616,6 +638,155 @@ During training, each sample has a 50\% probability of using an augmented query,
     \item \textbf{Analysis:} Both methods successfully leverage the ``music'' context to distinguish between computer and musical keyboards.
 \end{itemize}
 
+\textbf{Example 3: ``neptune statue''}
+\begin{itemize}
+    \item \textbf{Gold image:} A standing bronze statue of Neptune holding a trident.
+    \item \textbf{CLIP ViT-L/14 ranking:} 1st (correct)
+    \item \textbf{Analysis:} The synthesis-based method bridged the visual gap between the query (seated) and the target (standing) by generating a canonical Neptune figure. The model successfully prioritized the defining semantic attribute—the \textbf{trident}—over conflicting global structures like pose and background.
+\end{itemize}
+
+\textbf{Example 4: ``mill grinding''}
+\begin{itemize}
+    \item \textbf{Gold image:} A close-up view of a wooden hopper and millstone mechanism.
+    \item \textbf{CLIP ViT-L/14 ranking:} 1st (correct)
+    \item \textbf{Analysis:} This case demonstrates \textbf{generative alignment}. The synthetic proxy emphasized canonical features like rustic wood textures and mechanical gears. This allowed the system to focus on the semantic core of ``machinery,'' ignoring the human figure present in the query and overcoming significant differences in framing and composition.
+\end{itemize}
+
+% --- Example 1: Gin Tool ---
+\textbf{Example 5: Disambiguating ``gin tool'' (Sample 398)}
+\begin{itemize}
+    \item \textbf{Query Transformation:} ``gin tool'' $\rightarrow$ ``gin tool, a machine for separating cotton fiber from its seeds''
+    \item \textbf{No Augmentation:}
+    \begin{itemize}
+        \item \textbf{Prediction:} \textcolor{red}{Incorrect}. Retrieved liquor bottles (Score: 26.20) due to semantic ambiguity with the alcoholic drink ``gin''.
+        \item \textbf{Gold Image Score:} 19.15.
+    \end{itemize}
+    \item \textbf{With Augmentation:}
+    \begin{itemize}
+        \item \textbf{Prediction:} \textcolor{green}{Correct}. Retrieved the cotton gin machine (Score: 38.87).
+    \end{itemize}
+    \item \textbf{Gain:} \textbf{+19.72}. The definition-based rewrite successfully shifted the semantic focus from ``alcohol'' to ``machinery.''
+\end{itemize}
+
+\vspace{1em}
+
+% --- Example 2: Police Club ---
+\textbf{Example 6: Disambiguating ``police club'' (Sample 181)}
+\begin{itemize}
+    \item \textbf{Query Transformation:} ``police club'' $\rightarrow$ ``police club, a heavy stick or truncheon carried and used for defense by a police officer''
+    \item \textbf{No Augmentation:}
+    \begin{itemize}
+        \item \textbf{Prediction:} \textcolor{red}{Incorrect}. Retrieved a movie poster for Charlie Chaplin's ``Police'' (Score: 24.01). The model matched the text/title rather than the object.
+        \item \textbf{Gold Image Score:} 9.81.
+    \end{itemize}
+    \item \textbf{With Augmentation:}
+    \begin{itemize}
+        \item \textbf{Prediction:} \textcolor{green}{Correct}. Retrieved a wooden police baton/truncheon (Score: 26.17).
+    \end{itemize}
+    \item \textbf{Gain:} \textbf{+16.36}. Augmentation clarified the physical nature of the object, avoiding confusion with media titles or the police institution.
+\end{itemize}
+
+\begin{figure}[h]
+    \centering
+    % 调整：将宽度改为 0.35\textwidth 以匹配之前的尺寸
+    % 左侧图：查询
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_query_6.jpg}
+        \caption*{(a) Query Image (Seated Neptune)}
+    \end{minipage}
+    %
+    \hspace{0.5cm} % 调整：使用固定间距，使图片居中且紧凑
+    %
+    % 右侧图：预测（正确）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/2_predicted_image.4464.jpg}
+        \caption*{(b) Predicted (Standing Neptune)}
+    \end{minipage}
+    
+    % 总标题
+    \caption{A success case demonstrating robust \textbf{semantic matching}. Despite significant differences in pose and background composition between the query (a) and prediction (b), the model successfully identifies the subject based on distinctive semantic features, such as the trident.}
+    \label{fig:success_case_neptune}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    % 左侧图：查询
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_query_10.jpg}
+        \caption*{(a) Query Image (Mill Interior)}
+    \end{minipage}
+    %
+    \hspace{0.5cm} % 保持固定的间距
+    %
+    % 右侧图：预测（正确）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/2_predicted_image.4499.jpg}
+        \caption*{(b) Predicted (Mill Machinery)}
+    \end{minipage}
+    
+    % 总标题
+    \caption{A success case demonstrating effective \textbf{semantic abstraction}. Although the query (a) features a human worker and a wide environmental shot, the synthesis-based method correctly focuses on the core text-driven concept of ``mill grinding,'' successfully retrieving the corresponding machinery details (b) by prioritizing structural and textural matches (wood, stone) over pixel-level composition.}
+    \label{fig:success_case_mill}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    % 左侧图：无增强（错误）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_Wrong_NoAug_image.7627.jpg}
+        \caption*{(a) No Augmentation (Liquor Bottles)}
+    \end{minipage}
+    %
+    \hspace{0.5cm} % 保持固定的间距
+    %
+    % 右侧图：有增强（正确）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/2_Correct_Aug_image.7625.jpg}
+        \caption*{(b) With Augmentation (Cotton Gin)}
+    \end{minipage}
+    
+    % 总标题
+    \caption{Impact of text augmentation on the ambiguous query ``gin tool.'' Without augmentation (a), the model conflates ``gin'' with alcohol. Adding the definition ``machine for separating cotton'' (b) successfully disambiguates the context, retrieving the correct mechanical device.}
+    \label{fig:aug_case_gin}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    % 左侧图：无增强（错误）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_Wrong_NoAug_image.5972.jpg}
+        \caption*{(a) No Augmentation (Movie Poster)}
+    \end{minipage}
+    %
+    \hspace{0.5cm} % 保持固定的间距
+    %
+    % 右侧图：有增强（正确）
+    \begin{minipage}{0.35\textwidth}
+        \centering
+        % 请确认路径是否正确
+        \includegraphics[width=\textwidth]{proposalTemplate/images/2_Correct_Aug_image.5974.jpg}
+        \caption*{(b) With Augmentation (Police Baton)}
+    \end{minipage}
+    
+    % 总标题
+    \caption{Impact of text augmentation on ``police club.'' The baseline (a) incorrectly retrieves a movie poster titled ``Police,'' matching the text literal. The augmented query (b), clarifying it as a ``heavy stick used as a weapon,'' correctly guides the model to the physical object (baton).}
+    \label{fig:aug_case_police}
+\end{figure}
+
 \subsection{Failure Cases}
 
 \textbf{Example 3: ``bank river''}
@@ -653,6 +824,22 @@ As shown in Figure~\ref{fig:failure_case_ear}(a), the system correctly synthesiz
     \item \textbf{The Gold Standard (Fig.~\ref{fig:failure_case_ear}(c)):} The correct image is an \textbf{anatomical diagram} (line drawing/illustration). While it perfectly matches the semantic meaning of ``ear anatomy,'' it differs drastically from the query in terms of visual style (textureless, schematic, white background).
 \end{itemize}
 
+\textbf{Example 6: ``personal bag''}
+\label{sec:failure_style_bias}
+Figure~\ref{fig:failure_case_bag} illustrates a representative failure case caused by \textbf{visual style bias} and \textbf{context over-specification}.
+\textbf{Instance Details:}
+\begin{itemize}
+    \item \textbf{Target Word / Context:} ``personal bag'' (general travel/personal luggage).
+    \item \textbf{Method:} Synthesis-Based Retrieval (Text $\rightarrow$ Generated Image $\rightarrow$ Retrieval).
+\end{itemize}
+
+\textbf{Visual Analysis:}
+As shown in Figure~\ref{fig:failure_case_bag}(a), the system generated a highly stylized, professionally composed image of a brown leather duffle bag in a travel terminal setting, complete with passport, sunglasses, and atmospheric lighting with visible travelers and transit vehicles in the background.
+\begin{itemize}
+\item \textbf{The Prediction (Fig.~\ref{fig:failure_case_bag}(b)):} The model retrieved a silver hardshell rolling suitcase photographed against a plain interior background. While this is semantically valid as a ``personal bag,'' it shares minimal visual similarity with the generated query image in terms of material (hard plastic vs. leather), color (metallic silver vs. warm brown), form factor (wheeled upright vs. carry duffle), and contextual setting (studio-like vs. transit hub).
+\item \textbf{The Ground Truth (Fig.~\ref{fig:failure_case_bag}(c)):} The correct match shows a person at a formal event holding a metallic gold pleated clutch purse. This image captures a completely different interpretation of ``personal bag''—an evening accessory rather than travel luggage—and represents yet another visual modality (fashion/event photography with human subject).
+\end{itemize}
+
 \textbf{Root Cause:}
 The vision encoder (e.g., CLIP/SigLIP) prioritized \textbf{stylistic and textural similarity} (``fleshy photo'' $\approx$ ``fleshy photo'') over \textbf{semantic correspondence} (``ear photo'' $\neq$ ``ear diagram''). This highlights a critical limitation in cross-modal retrieval: models struggle to bridge the \textbf{domain gap} between realistic imagery (photos) and abstract representations (diagrams, sketches) when the distractor images offer a closer textural match.
 
@@ -677,6 +864,29 @@ The vision encoder (e.g., CLIP/SigLIP) prioritized \textbf{stylistic and textura
     \end{minipage}
     \caption{A failure case demonstrating \textbf{texture bias}. The model matches the generated eardrum photo (a) with a visually similar throat photo (b) instead of the semantically correct but stylistically different anatomical diagram (c).}
     \label{fig:failure_case_ear}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \begin{minipage}{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{proposalTemplate/images/1_query_29.jpg}
+        \caption*{(a) Generated Query}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{proposalTemplate/images/2_predicted_image.4675.jpg}
+        \caption*{(b) Predicted (Incorrect)}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.32\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{proposalTemplate/images/3_correct_image.4669.jpg}
+        \caption*{(c) Gold (Correct)}
+    \end{minipage}
+    \caption{A failure case demonstrating \textbf{visual style bias and semantic ambiguity}. The model generates a stylized leather duffle bag in a travel context (a), retrieves a hardshell suitcase (b) based on surface-level ``bag'' features, but misses the gold clutch purse (c) which represents the correct interpretation in a fashion/formal event context.}
+    \label{fig:failure_case_bag}
 \end{figure}
 
 \end{document}

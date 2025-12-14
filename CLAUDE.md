@@ -169,7 +169,7 @@ python src/data_loader.py
 conda create -n vwsd python=3.10 -y && conda activate vwsd
 
 # Install PyTorch with CUDA 12.8
-pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Install dependencies
 pip install -r requirements.txt
